@@ -12,7 +12,7 @@ RANDOM_SEED    = 42
 # ── Column definitions ───────────────────────────────────────────────────────
 VELOCITY_COLS = [f"w_{i:02d}" for i in range(N_POINTS)]
 PHYSICAL_COLS = ["amplitude_plus", "amplitude_star", "period_plus",
-                 "omega_plus", "wavenumber_plus", "reynolds"]
+                 "wavenumber_plus", "reynolds", "omega_plus", "R_uncertainty"]
 TARGET_COLS   = ["R", "S"]
 
 # ── Load and Clean Labeled DNS Data ─────────────────────────────────────────
@@ -20,12 +20,78 @@ def load_labeled(path=LABELED_PATH):
     df = pd.read_csv(path)
 
     print(f"Loaded {len(df)} labeled rows")
-    print(f"Columns: {list(df.columns)}")
     print(f"\nMissing values per column:")
     print(df.isnull().sum())
 
+    # generate waveform shapes from family names
+    df = add_waveform_columns(df)
+
     return df
 
+def generate_waveform_from_family(family_name, n_points=N_POINTS):
+    """
+    Mathematically reconstruct a waveform shape from its family name.
+    Covers the 5 waveform families from Cimarelli et al. with R/S data.
+    """
+    t = np.linspace(0, 1, n_points, endpoint=False)
+
+    if family_name == "sine":
+        # (a) standard sine wave
+        w = np.sin(2 * np.pi * t)
+
+    elif family_name == "square":
+        # (b) square wave — +1 for first half, -1 for second half
+        w = np.where(t < 0.5, 1.0, -1.0).astype(float)
+
+    elif family_name == "revsawtooth":
+        # (e) reverse sawtooth with step
+        w = np.where(t < 0.5, 1.0 - 2*t, 3.0 - 2*t).astype(float)
+        w = np.clip(w, -1.0, 1.0)
+
+    elif family_name == "doublepeak":
+        # (f) double peak — two humps positive, one valley negative
+        w = np.sin(2 * np.pi * t) + 0.5 * np.sin(4 * np.pi * t)
+
+    elif family_name == "asymmetric":
+        # (j) asymmetric with flat section then sharp drop
+        w = np.where(t < 0.4, np.sin(2 * np.pi * t / 0.8),
+            np.where(t < 0.6, -1.0,
+            np.sin(2 * np.pi * (t - 0.6) / 0.8 + np.pi))).astype(float)
+
+    else:
+        print(f"Warning: unknown waveform family '{family_name}', using sine")
+        w = np.sin(2 * np.pi * t)
+
+    # normalize so max absolute value = 1.0
+    max_val = np.max(np.abs(w))
+    if max_val > 0:
+        w = w / max_val
+
+    return w.astype(np.float32)
+
+
+def add_waveform_columns(df):
+    """
+    For rows that have a waveform_family label but no velocity columns,
+    generate the waveform shape mathematically and add w_00...w_63 columns.
+    """
+    # initialize velocity columns with NaN if they don't exist
+    for col in VELOCITY_COLS:
+        if col not in df.columns:
+            df[col] = np.nan
+
+    # fill in waveform shapes for rows that have a family name
+    filled = 0
+    for idx, row in df.iterrows():
+        family = row.get("waveform_family", None)
+        if pd.notnull(family) and pd.isnull(row.get("w_00", np.nan)):
+            w = generate_waveform_from_family(str(family).strip().lower())
+            for i, col in enumerate(VELOCITY_COLS):
+                df.at[idx, col] = w[i]
+            filled += 1
+
+    print(f"Generated waveform shapes for {filled} labeled rows")
+    return df
 
 # ── Extract Waveform Shapes From Labeled Data ────────────────────────────────
 def extract_waveforms_labeled(df):
