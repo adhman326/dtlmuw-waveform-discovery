@@ -163,7 +163,7 @@ def prepare_data():
 def train(model, train_loader, val_loader, n_epochs=N_EPOCHS, lr=LR):
     optimizer = optim.Adam(model.parameters(), lr-lr)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, patience=10, factor=0.5, verbose=True
+        optimizer, patience=10, factor=0.5
     )
 
     train_losses = []
