@@ -10,7 +10,7 @@ python src/fourier.py
 # Step 2 — Verify dataset
 python src/dataset.py
 
-# Step 3 — Train VAE (coming soon)
+# Step 3 — Train VAE
 python src/vae.py
 
 ## Data
