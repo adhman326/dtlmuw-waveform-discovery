@@ -220,7 +220,7 @@ def train(model, train_loader, val_loader, n_epochs=N_EPOCHS, lr=LR):
         # save best model
         if avg_val < best_val:
             best_val = avg_val
-            os.makerdirs("models", exist_ok=True)
+            os.makedirs("models", exist_ok=True)
             torch.save(model.state_dict(), SAVE_PATH)
 
         scheduler.step(avg_val)
