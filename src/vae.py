@@ -15,10 +15,10 @@ from dataset import load_labeled, build_vae_dataset
 N_POINTS = 64 # waveform length
 LATENT_DIM = 8 # latent space size - will ablate later
 HIDDEN_DIM = 128 # neurons in hidden layers
-BATCH_SIZE = 64 # waveforms per training batch
-N_EPOCHS = 200 # training epochs
-LR = 1e-3 # learning rate
-BETA = 1.0 # KL divergence weight (1.0 = standard VAE)
+BATCH_SIZE = 32 # waveforms per training batch
+N_EPOCHS = 300 # training epochs
+LR = 3e-4 # learning rate
+BETA = 0.0001 # KL divergence weight
 VAL_SPLIT = 0.15 # fraction of VAE data used for validation
 RANDOM_SEED = 42
 SAVE_PATH = "models/vae.pt"
@@ -114,20 +114,8 @@ class VAE(nn.Module):
     
 # ── Loss Function ─────────────────────────────────────────────────────────────
 def vae_loss(x, x_recon, mu, log_var, beta=BETA):
-    """
-    VAE loss = reconstruction loss + KL divergence
-    Reconstruction loss: how different is the output from the input?
-    KL divergence: how far is the latent distribution from a standard normal?
-    This is what forces the latent space to be smooth.
-    Beta controls the tradeoff — higher beta = smoother latent space
-    but worse reconstruction.
-    """
-    #mean square error between input and reconstruction
-    recon_loss = nn.functional.mse_loss(x_recon, x, reduction = "mean")
-
-    # KL divergence - analytical formula for Gaussian distributions
-    kl_loss = -0.5 * torch.mean(1+ log_var - mu.pow(2) - log_var.exp())
-
+    recon_loss = nn.functional.mse_loss(x_recon, x, reduction="mean")
+    kl_loss = -0.5 * torch.mean(1 + log_var - mu.pow(2) - log_var.exp())
     total_loss = recon_loss + beta * kl_loss
     return total_loss, recon_loss, kl_loss
 
@@ -177,6 +165,9 @@ def train(model, train_loader, val_loader, n_epochs=N_EPOCHS, lr=LR):
 
     for epoch in range(1, n_epochs + 1):
 
+        # KL annealing — gradually increase beta over first 100 epochs
+        current_beta = min(BETA, BETA * (epoch / 100))
+    
         # training
         model.train()
         total_train = 0.0
@@ -184,7 +175,7 @@ def train(model, train_loader, val_loader, n_epochs=N_EPOCHS, lr=LR):
             batch = batch.to(device)
             optimizer.zero_grad()
             x_recon, mu, log_var = model(batch)
-            loss, recon, kl = vae_loss(batch, x_recon, mu, log_var)
+            loss, recon, kl = vae_loss(batch, x_recon, mu, log_var, beta=current_beta)
             loss.backward()
             optimizer.step()
             total_train += loss.item()
