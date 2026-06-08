@@ -151,7 +151,7 @@ def prepare_data():
 def train(model, train_loader, val_loader, n_epochs=N_EPOCHS, lr=LR):
     optimizer = optim.Adam(model.parameters(), lr-lr)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, patience=10, factor=0.5, verbose=True
+        optimizer, patience=10, factor=0.5
     )
 
     train_losses = []
@@ -211,7 +211,7 @@ def train(model, train_loader, val_loader, n_epochs=N_EPOCHS, lr=LR):
         # save best model
         if avg_val < best_val:
             best_val = avg_val
-            os.makerdirs("models", exist_ok=True)
+            os.makedirs("models", exist_ok=True)
             torch.save(model.state_dict(), SAVE_PATH)
 
         scheduler.step(avg_val)
