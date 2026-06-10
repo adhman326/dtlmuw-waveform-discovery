@@ -279,9 +279,49 @@ def plot_reconstructions(model, val_loader, n_samples=6):
     plt.show()
     print("Reconstruction plot saved to results/vae_reconstructions.png")
 
+# ── Evaluate VAE ──────────────────────────────────────────────────────────────
+def evaluate_vae(model, val_loader):
+    """
+    Compute quantitative reconstruction metrics on held-out validation set.
+    Reports MAE and MSE — the numbers that go in the paper.
+    """
+    model.eval()
+    all_originals = []
+    all_recons    = []
+
+    with torch.no_grad():
+        for (batch,) in val_loader:
+            batch = batch.to(device)
+            recon, mu, log_var = model(batch)
+            all_originals.append(batch.cpu().numpy())
+            all_recons.append(recon.cpu().numpy())
+
+    originals = np.concatenate(all_originals, axis=0)
+    recons    = np.concatenate(all_recons,    axis=0)
+
+    # per-waveform metrics
+    mse_per_waveform = np.mean((originals - recons) ** 2, axis=1)
+    mae_per_waveform = np.mean(np.abs(originals - recons), axis=1)
+
+    print("\n── VAE Evaluation Metrics ──────────────────────")
+    print(f"Mean MSE across validation set:  {np.mean(mse_per_waveform):.6f}")
+    print(f"Std  MSE across validation set:  {np.std(mse_per_waveform):.6f}")
+    print(f"Mean MAE across validation set:  {np.mean(mae_per_waveform):.6f}")
+    print(f"Std  MAE across validation set:  {np.std(mae_per_waveform):.6f}")
+    print(f"Max  MAE (worst reconstruction): {np.max(mae_per_waveform):.6f}")
+    print(f"Min  MAE (best reconstruction):  {np.min(mae_per_waveform):.6f}")
+    print("────────────────────────────────────────────────")
+
+    return np.mean(mae_per_waveform), np.mean(mse_per_waveform)
 
 # ── Entry Point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--eval-only", action="store_true",
+                        help="Skip training and just evaluate saved model")
+    args = parser.parse_args()
+
     torch.manual_seed(RANDOM_SEED)
 
     model = VAE(
@@ -293,14 +333,24 @@ if __name__ == "__main__":
     total_params = sum(p.numel() for p in model.parameters())
     print(f"VAE parameters: {total_params:,}")
 
+    # load data either way — needed for eval and training
     train_loader, val_loader = prepare_data()
 
-    train_losses, val_losses, recon_losses, kl_losses = train(
-        model, train_loader, val_loader
-    )
+    if args.eval_only:
+        # skip training — just load saved model and evaluate
+        print(f"\nLoading saved model from {SAVE_PATH}...")
+        model.load_state_dict(torch.load(SAVE_PATH, map_location=device))
+        print("Model loaded successfully.")
+    else:
+        # full training run
+        train_losses, val_losses, recon_losses, kl_losses = train(
+            model, train_loader, val_loader
+        )
+        model.load_state_dict(torch.load(SAVE_PATH, map_location=device))
+        plot_loss(train_losses, val_losses, recon_losses, kl_losses)
 
-    model.load_state_dict(torch.load(SAVE_PATH))
-    plot_loss(train_losses, val_losses, recon_losses, kl_losses)
+    # always run evaluation and reconstruction plot
+    mae, mse = evaluate_vae(model, val_loader)
     plot_reconstructions(model, val_loader)
 
-    print("\nVAE training complete.")
+    print("\nVAE evaluation complete.")
