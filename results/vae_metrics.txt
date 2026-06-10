@@ -1,0 +1,44 @@
+Using device: cuda
+VAE parameters: 236,368
+Loaded 110 labeled rows
+
+Missing values per column:
+source              0
+waveform_family     0
+amplitude_plus     12
+amplitude_star     98
+period_plus        24
+wavenumber_plus    24
+reynolds            0
+R                  11
+S                  59
+omega_plus         24
+R_uncertainty      94
+simulation_type    64
+dtype: int64
+Generated waveform shapes for 110 labeled rows
+
+Labeled rows with waveform shape data: 110 / 110
+Loaded 10000 synthetic waveforms
+
+VAE training set: 10110 total waveforms
+  — 110 from labeled DNS
+  — 10000 synthetic
+
+Full VAE dataset: torch.Size([10110, 64])
+Train: 8594 | Val: 1516
+
+Loading saved model from models/vae.pt...
+Model loaded successfully.
+
+── VAE Evaluation Metrics ──────────────────────
+Mean MSE across validation set:  0.008644
+Std  MSE across validation set:  0.013108
+Mean MAE across validation set:  0.067667
+Std  MAE across validation set:  0.040651
+Max  MAE (worst reconstruction): 0.415308
+Min  MAE (best reconstruction):  0.018724
+────────────────────────────────────────────────
+Reconstruction plot saved to results/vae_reconstructions.png
+
+VAE evaluation complete.
