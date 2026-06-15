@@ -1,0 +1,58 @@
+Using device: cuda
+VAE loaded from models/vae.pt
+Loaded 110 labeled rows
+
+Missing values per column:
+source              0
+waveform_family     0
+amplitude_plus     12
+amplitude_star     98
+period_plus        24
+wavenumber_plus    24
+reynolds            0
+R                  11
+S                  59
+omega_plus         24
+R_uncertainty      94
+simulation_type    64
+dtype: int64
+Generated waveform shapes for 110 labeled rows
+Encoded 110 waveforms to latent space (shape: (110, 8))
+  Filling 12 missing amplitude_plus with median 7.0000
+  Filling 98 missing amplitude_star with median 6.2518
+  Filling 24 missing period_plus with median 121.3931
+  Filling 24 missing wavenumber_plus with median 0.0000
+  Filling 24 missing omega_plus with median 0.0517
+GPR feature matrix shape: (110, 6)  (physical only)
+
+Split: 88 train / 11 val / 11 test
+Scaler saved to models/scaler.pkl
+
+Training GPR for R on 79 samples (9 skipped — missing labels)
+Optimized kernel: 1.79**2 * Matern(length_scale=4.26, nu=2.5) + WhiteKernel(noise_level=0.147)
+GPR (R) saved to models/gpr_R.pkl
+
+Training GPR for S on 39 samples (49 skipped — missing labels)
+Optimized kernel: 1.12**2 * Matern(length_scale=0.0562, nu=2.5) + WhiteKernel(noise_level=0.0745)
+GPR (S) saved to models/gpr_S.pkl
+
+── GPR Evaluation: R ──────────────────────
+Test samples:        10
+MAE:                 0.0422
+R²:                  0.7567
+95% CI coverage:     100.00%  (target: ~95%)
+Mean uncertainty:    0.0660
+────────────────────────────────────────────────────
+
+── GPR Evaluation: S ──────────────────────
+Test samples:        6
+MAE:                 0.0774
+R²:                  -0.7107
+95% CI coverage:     83.33%  (target: ~95%)
+Mean uncertainty:    0.0553
+────────────────────────────────────────────────────
+Plot saved to results/gpr_predictions_R.png
+Plot saved to results/gpr_predictions_S.png
+
+GPR training complete.
+Next step: run src/optimize.py to find novel waveforms.
