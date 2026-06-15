@@ -58,44 +58,39 @@ def encode_labeled_waveforms(vae, labeled_df):
     return latent, df_waves
 
 # ── Build GPR Feature Matrix ──────────────────────────────────────────────────
-def build_gpr_features(latent, df):
+def build_gpr_features(latent, df, use_latent=False):
     """
-    Combine latent coordinates with physical parameters to build full feature matrix for GPR
-    
-    Features:
-    - 8 latent dimensions (waveform shape)
-    - amplitude_plus or amplitude_star (operating condition)
-    - reynolds (flow condition)
-    - period_plus (operating condition — where available)
+    Build GPR feature matrix.
+    use_latent=False: physical parameters only (better for small datasets)
+    use_latent=True: latent + physical (better when dataset is larger)
     """
-
-    # latent coordinates
-    latent_df = pd.DataFrame(
-        latent,
-        columns=[f"z_{i}" for i in range(latent.shape[1])],
-        index=df.index
-    )
-
-    # physical parameters - use what's available
     phys_cols = []
-    for col in ["amplitude_plus", "amplitude_star", "period_plus", "reynolds"]:
+    for col in ["amplitude_plus", "amplitude_star", "period_plus",
+                "wavenumber_plus", "reynolds", "omega_plus"]:
         if col in df.columns:
             phys_cols.append(col)
 
     phys_df = df[phys_cols].copy()
 
-    # fill missing physical params with median
     for col in phys_cols:
         median = phys_df[col].median()
         n_miss = phys_df[col].isnull().sum()
         if n_miss > 0:
-            print(f"  Filling {n_miss} missing {col} values with median "
-                  f"{median:.4f}")
+            print(f"  Filling {n_miss} missing {col} with median {median:.4f}")
         phys_df[col] = phys_df[col].fillna(median)
 
-    # combine latent + physical
-    X = pd.concat([latent_df, phys_df], axis=1).values.astype(np.float32)
-    print(f"GPR feature matrix shape: {X.shape}")
+    if use_latent:
+        latent_df = pd.DataFrame(
+            latent,
+            columns=[f"z_{i}" for i in range(latent.shape[1])],
+            index=df.index
+        )
+        X = pd.concat([latent_df, phys_df], axis=1).values.astype(np.float32)
+    else:
+        X = phys_df.values.astype(np.float32)
+
+    print(f"GPR feature matrix shape: {X.shape}  "
+          f"({'latent + physical' if use_latent else 'physical only'})")
     return X
 
 # ── Train GPR ─────────────────────────────────────────────────────────────────
@@ -215,14 +210,14 @@ if __name__ == "__main__":
     latent, df_waves = encode_labeled_waveforms(vae, labeled_df)
 
     # 4. build feature matrix
-    X = build_gpr_features(latent, df_waves)
+    X = build_gpr_features(latent, df_waves, use_latent=False)
 
     # 5. get targets
     y_R = df_waves["R"].values.astype(np.float32)
     y_S = df_waves["S"].values.astype(np.float32)
 
     # 6. train/val/test split
-    splits = split_labeled(X, y_R, y_S)
+    splits = split_labeled(X, y_R, y_S, train=0.80, val=0.10, test=0.10)
     X_train, yR_train, yS_train = splits[0], splits[1], splits[2]
     X_val,   yR_val,   yS_val   = splits[3], splits[4], splits[5]
     X_test,  yR_test,  yS_test  = splits[6], splits[7], splits[8]
