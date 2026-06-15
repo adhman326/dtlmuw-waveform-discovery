@@ -105,7 +105,7 @@ def train_gpr(X_train, y_train, target_name = "R"):
     well suited to smooth physical functions. Returns the fitted GPR.
     """
     # remove rows where target is NaN
-    valid = -np.isnan(y_train)
+    valid = np.logical_not(np.isnan(y_train))
     X_tr = X_train[valid]
     y_tr = y_train[valid]
     print(f"\nTraining GPR for {target_name} on {len(y_tr)} samples "
@@ -136,7 +136,7 @@ def evaluate_gpr(gpr, X_test, y_test, target_name="R"):
     Reports MAE, R², and calibration of uncertainty estimates.
     """
     # remove NaN targets
-    valid  = ~np.isnan(y_test)
+    valid  = np.logical_not(np.isnan(y_test))
     X_te   = X_test[valid]
     y_te   = y_test[valid]
 
