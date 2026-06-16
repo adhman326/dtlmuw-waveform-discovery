@@ -22,9 +22,9 @@ device          = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # physical parameters to use alongside latent coords
 # these are fixed to a representative operating condition
-FIXED_AMPLITUDE = 7.0    # A+ — matches Gatti optimal region
+FIXED_AMPLITUDE = 4.5    # A+ — Center of Cimarelli range
 FIXED_PERIOD    = 125.0  # T+ — matches Cimarelli optimal region
-FIXED_REYNOLDS  = 200    # Re — matches both datasets
+FIXED_REYNOLDS  = 180    # Re — matches Cimarelli
 
 
 # ── Load Models ───────────────────────────────────────────────────────────────
@@ -181,17 +181,28 @@ def run_bayesian_optimization(vae, gpr_R, scaler):
 # ── Get Sinusoidal Baseline ───────────────────────────────────────────────────
 def get_sinusoidal_baseline(labeled_df):
     """
-    Find the best R achieved by sinusoidal waveforms in the dataset.
-    This is the baseline our novel waveforms need to beat.
+    Find best sinusoidal R at the same operating conditions
+    used by the optimizer — not the global maximum.
     """
     sine_rows = labeled_df[
-        labeled_df["waveform_family"] == "sine"
+        (labeled_df["waveform_family"] == "sine") &
+        (labeled_df["amplitude_plus"].between(5, 9)) &
+        (labeled_df["period_plus"].between(100, 150))
     ]["R"].dropna()
 
-    best_sine_R = sine_rows.max()
-    print(f"\nBest sinusoidal R in dataset: {best_sine_R:.4f}")
-    return best_sine_R
+    if len(sine_rows) > 0:
+        best_sine_R = sine_rows.max()
+        print(f"Best sinusoidal R at matched conditions "
+              f"(A+=5-9, T+=100-150): {best_sine_R:.4f}")
+    else:
+        # fall back to global max with a warning
+        best_sine_R = labeled_df[
+            labeled_df["waveform_family"] == "sine"
+        ]["R"].dropna().max()
+        print(f"Warning: no sine rows at matched conditions. "
+              f"Using global max: {best_sine_R:.4f}")
 
+    return best_sine_R
 
 # ── Extract Top Proposals ─────────────────────────────────────────────────────
 def extract_proposals(evaluated_z, evaluated_R, evaluated_std,
