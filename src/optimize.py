@@ -52,35 +52,25 @@ def load_models():
 
 
 # ── Build Feature Vector ──────────────────────────────────────────────────────
-def build_feature(z, scaler):
-    """
-    Build a single feature vector for the GPR from latent coordinates.
-    Appends fixed physical parameters to the latent vector.
-    """
+def build_feature(z, scaler, amplitude=FIXED_AMPLITUDE):
     phys = np.array([
-        FIXED_AMPLITUDE,  # amplitude_plus
-        6.2518,           # amplitude_star median from training
-        FIXED_PERIOD,     # period_plus
-        0.0,              # wavenumber_plus
-        FIXED_REYNOLDS,   # reynolds
-        2 * np.pi / FIXED_PERIOD,  # omega_plus
+        amplitude,
+        6.2518,
+        FIXED_PERIOD,
+        0.0,
+        FIXED_REYNOLDS,
+        2 * np.pi / FIXED_PERIOD,
     ], dtype=np.float32)
 
-    x = phys.reshape(1, -1)
+    x        = phys.reshape(1, -1)
     x_scaled = scaler.transform(x)
     return x_scaled
 
-
 # ── GPR Prediction ────────────────────────────────────────────────────────────
-def predict_R(z, gpr_R, scaler):
-    """
-    Predict drag reduction R for a latent coordinate z.
-    Returns mean prediction and uncertainty.
-    """
-    x = build_feature(z, scaler)
+def predict_R(z, gpr_R, scaler, amplitude=FIXED_AMPLITUDE):
+    x         = build_feature(z, scaler, amplitude=amplitude)
     mu, sigma = gpr_R.predict(x, return_std=True)
     return float(mu[0]), float(sigma[0])
-
 
 # ── Expected Improvement Acquisition Function ─────────────────────────────────
 def expected_improvement(mu, sigma, best_so_far, xi=0.01):
@@ -108,75 +98,71 @@ def random_latent_samples(n, latent_dim=LATENT_DIM, bounds=LATENT_BOUNDS):
 # ── Bayesian Optimization Loop ────────────────────────────────────────────────
 def run_bayesian_optimization(vae, gpr_R, scaler):
     """
-    Main BO loop. Searches latent space for coordinates that
-    maximize predicted drag reduction R.
+    BO loop with amplitude as an additional search dimension.
     """
     np.random.seed(RANDOM_SEED)
 
-    # track all evaluated points
-    evaluated_z  = []   # latent coordinates tried
-    evaluated_R  = []   # predicted R at each point
-    evaluated_std = []  # uncertainty at each point
+    evaluated_z     = []
+    evaluated_R     = []
+    evaluated_std   = []
+    evaluated_amp   = []
 
     print(f"\nPhase 1: Random exploration ({N_RANDOM_INIT} points)...")
 
-    # phase 1 — random exploration
-    random_z = random_latent_samples(N_RANDOM_INIT)
-    for i, z in enumerate(random_z):
-        mu, sigma = predict_R(z, gpr_R, scaler)
+    # random exploration — vary both latent coords and amplitude
+    random_z   = random_latent_samples(N_RANDOM_INIT)
+    random_amp = np.random.uniform(2.0, 9.0, N_RANDOM_INIT)
+
+    for i, (z, amp) in enumerate(zip(random_z, random_amp)):
+        mu, sigma = predict_R(z, gpr_R, scaler, amplitude=amp)
         evaluated_z.append(z)
         evaluated_R.append(mu)
         evaluated_std.append(sigma)
+        evaluated_amp.append(amp)
 
     best_so_far = max(evaluated_R)
     print(f"Best R after random exploration: {best_so_far:.4f}")
 
     print(f"\nPhase 2: Bayesian optimization ({N_ITERATIONS} iterations)...")
 
-    # phase 2 — BO loop
     for iteration in range(N_ITERATIONS):
+        candidates     = random_latent_samples(1000)
+        candidate_amps = np.random.uniform(2.0, 9.0, 1000)
 
-        # generate candidate points to evaluate
-        candidates = random_latent_samples(1000)
-
-        # predict R and uncertainty for all candidates
         candidate_features = np.array([
-            build_feature(z, scaler)[0] for z in candidates
+            build_feature(z, scaler, amplitude=amp)[0]
+            for z, amp in zip(candidates, candidate_amps)
         ])
+
         mu_all, sigma_all = gpr_R.predict(
             candidate_features, return_std=True
         )
 
-        # compute expected improvement for each candidate
-        ei = expected_improvement(
-            mu_all, sigma_all, best_so_far
-        )
-
-        # pick candidate with highest EI
+        ei      = expected_improvement(mu_all, sigma_all, best_so_far)
         best_idx = np.argmax(ei)
         next_z   = candidates[best_idx]
+        next_amp = candidate_amps[best_idx]
 
-        # evaluate it
-        mu, sigma = predict_R(next_z, gpr_R, scaler)
+        mu, sigma = predict_R(next_z, gpr_R, scaler, amplitude=next_amp)
         evaluated_z.append(next_z)
         evaluated_R.append(mu)
         evaluated_std.append(sigma)
+        evaluated_amp.append(next_amp)
 
-        # update best
         if mu > best_so_far:
             best_so_far = mu
 
-        # print progress every 100 iterations
         if (iteration + 1) % 100 == 0:
             print(f"  Iteration {iteration+1:4d} | "
-                  f"Best R so far: {best_so_far:.4f} | "
-                  f"Current R: {mu:.4f} ± {sigma:.4f}")
+                  f"Best R: {best_so_far:.4f} | "
+                  f"Current R: {mu:.4f} ± {sigma:.4f} | "
+                  f"A+: {next_amp:.2f}")
 
     print(f"\nOptimization complete. Best predicted R: {best_so_far:.4f}")
     return (np.array(evaluated_z),
             np.array(evaluated_R),
-            np.array(evaluated_std))
-
+            np.array(evaluated_std),
+            np.array(evaluated_amp))
 
 # ── Get Sinusoidal Baseline ───────────────────────────────────────────────────
 def get_sinusoidal_baseline(labeled_df):
@@ -206,15 +192,8 @@ def get_sinusoidal_baseline(labeled_df):
 
 # ── Extract Top Proposals ─────────────────────────────────────────────────────
 def extract_proposals(evaluated_z, evaluated_R, evaluated_std,
-                      n_proposals=N_PROPOSALS):
-    """
-    Extract the top N latent coordinates by predicted R.
-    Apply diversity constraint — proposals must be at least
-    0.5 units apart in latent space to avoid clustered results.
-    """
-    # sort by predicted R descending
+                      evaluated_amp, n_proposals=N_PROPOSALS):
     sorted_idx = np.argsort(evaluated_R)[::-1]
-
     selected   = []
     selected_z = []
 
@@ -222,12 +201,11 @@ def extract_proposals(evaluated_z, evaluated_R, evaluated_std,
         z   = evaluated_z[idx]
         r   = evaluated_R[idx]
         std = evaluated_std[idx]
+        amp = evaluated_amp[idx]
 
-        # diversity check — skip if too close to already selected point
         too_close = False
         for z_sel in selected_z:
-            dist = np.linalg.norm(z - z_sel)
-            if dist < 0.5:
+            if np.linalg.norm(z - z_sel) < 0.5:
                 too_close = True
                 break
 
@@ -236,6 +214,7 @@ def extract_proposals(evaluated_z, evaluated_R, evaluated_std,
                 "latent_coords": z,
                 "predicted_R":   r,
                 "uncertainty":   std,
+                "amplitude":     amp,
             })
             selected_z.append(z)
 
@@ -245,15 +224,10 @@ def extract_proposals(evaluated_z, evaluated_R, evaluated_std,
     print(f"\nSelected {len(selected)} diverse proposals")
     return selected
 
-
 # ── Decode Proposals to Waveforms ─────────────────────────────────────────────
 def decode_proposals(vae, proposals):
-    """
-    Decode latent coordinates back to waveform shapes.
-    Adds the decoded waveform to each proposal dict.
-    """
     for i, prop in enumerate(proposals):
-        z      = torch.tensor(
+        z = torch.tensor(
             prop["latent_coords"], dtype=torch.float32
         ).unsqueeze(0).to(device)
 
@@ -262,10 +236,9 @@ def decode_proposals(vae, proposals):
 
         prop["waveform"] = waveform
         print(f"Proposal {i+1:2d}: predicted R = {prop['predicted_R']:.4f} "
-              f"± {prop['uncertainty']:.4f}")
+              f"± {prop['uncertainty']:.4f} | A+ = {prop['amplitude']:.2f}")
 
     return proposals
-
 
 # ── Plot Optimization History ─────────────────────────────────────────────────
 def plot_optimization_history(evaluated_R, best_sine_R):
@@ -388,6 +361,10 @@ def save_proposals(proposals, best_sine_R):
 
 # ── Entry Point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    # create output directories
+    os.makedirs("results/optimizer", exist_ok=True)
+    os.makedirs("models", exist_ok=True)
+
     torch.manual_seed(RANDOM_SEED)
     np.random.seed(RANDOM_SEED)
 
@@ -399,12 +376,13 @@ if __name__ == "__main__":
     best_sine_R = get_sinusoidal_baseline(labeled_df)
 
     # run optimizer
-    evaluated_z, evaluated_R, evaluated_std = run_bayesian_optimization(
-        vae, gpr_R, scaler
-    )
+    evaluated_z, evaluated_R, evaluated_std, evaluated_amp = \
+        run_bayesian_optimization(vae, gpr_R, scaler)
 
     # extract diverse top proposals
-    proposals = extract_proposals(evaluated_z, evaluated_R, evaluated_std)
+    proposals = extract_proposals(
+        evaluated_z, evaluated_R, evaluated_std, evaluated_amp
+    )
 
     # decode to waveform shapes
     proposals = decode_proposals(vae, proposals)
