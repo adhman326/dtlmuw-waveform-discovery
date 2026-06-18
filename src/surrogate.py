@@ -143,9 +143,15 @@ def train_gpr(X_train, y_train, target_name="R"):
     print(f"\nTraining GPR for {target_name} on {len(y_tr)} samples "
           f"({(~valid).sum()} skipped — missing labels)")
 
+    n_features = X_tr.shape[1]
+
     kernel = (
         ConstantKernel(1.0, constant_value_bounds=(1e-3, 1e3)) *
-        Matern(length_scale=1.0, length_scale_bounds=(1e-2, 1e2), nu=2.5) +
+        Matern(
+            length_scale=np.ones(n_features),  # one length scale per feature
+            length_scale_bounds=(1e-2, 1e2),
+            nu=2.5
+        ) +
         WhiteKernel(noise_level=0.01, noise_level_bounds=(1e-5, 1.0))
     )
 
