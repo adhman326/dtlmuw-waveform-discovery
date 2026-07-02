@@ -102,18 +102,17 @@ def get_labeled_waveforms(labeled_df):
 # ── Build GPR Feature Matrix ──────────────────────────────────────────────────
 def build_gpr_features(waveforms, df):
     """
-    Build GPR feature matrix using shape descriptors + physical parameters.
-    This replaces the latent-coordinate approach — more interpretable
-    and better suited to a small dataset.
+    Build GPR feature matrix using shape descriptors + physical params.
+    When amplitude is fixed, it is excluded from features since it
+    has no variance and adds noise.
     """
-    # compute shape descriptors for every waveform
     descriptors_df = compute_descriptors_batch(waveforms)
     descriptors_df.index = df.index
 
-    # physical parameters
+    # exclude amplitude columns since we fixed them
     phys_cols = []
-    for col in ["amplitude_plus", "amplitude_star", "period_plus",
-                "wavenumber_plus", "reynolds", "omega_plus"]:
+    for col in ["period_plus", "wavenumber_plus",
+                "reynolds", "omega_plus"]:
         if col in df.columns:
             phys_cols.append(col)
 
@@ -122,10 +121,10 @@ def build_gpr_features(waveforms, df):
         median = phys_df[col].median()
         n_miss = phys_df[col].isnull().sum()
         if n_miss > 0:
-            print(f"  Filling {n_miss} missing {col} with median {median:.4f}")
+            print(f"  Filling {n_miss} missing {col} with median "
+                  f"{median:.4f}")
         phys_df[col] = phys_df[col].fillna(median)
 
-    # combine shape descriptors + physical parameters
     X = pd.concat([descriptors_df, phys_df], axis=1)
     feature_names = list(X.columns)
     X = X.values.astype(np.float32)
@@ -133,7 +132,6 @@ def build_gpr_features(waveforms, df):
     print(f"GPR feature matrix shape: {X.shape}")
     print(f"Features used: {feature_names}")
     return X, feature_names
-
 
 # ── Train GPR ─────────────────────────────────────────────────────────────────
 def train_gpr(X_train, y_train, target_name="R"):
@@ -270,12 +268,34 @@ if __name__ == "__main__":
     # 2. get waveforms with full shape data
     waveforms, df_waves = get_labeled_waveforms(labeled_df)
 
-    # 3. build feature matrix using shape descriptors + physical params
-    X, feature_names = build_gpr_features(waveforms, df_waves)
+    # 2b. filter to fixed amplitude — isolate shape signal
+    # keep rows where amplitude_plus ≈ 4.5 (most data-dense condition)
+    amp_mask = (
+        (df_waves["amplitude_plus"].between(4.0, 5.0)) |
+        (df_waves["amplitude_plus"].isna() &
+         df_waves["amplitude_star"].between(4.0, 5.0))
+    )
+    df_waves_filtered = df_waves[amp_mask].copy()
+    waveforms_filtered = waveforms[amp_mask.values]
+
+    print(f"\nFiltered to amplitude ≈ 4.5:")
+    print(f"  Rows before: {len(df_waves)}")
+    print(f"  Rows after:  {len(df_waves_filtered)}")
+    print(f"  Waveform families: "
+          f"{df_waves_filtered['waveform_family'].value_counts().to_dict()}")
+    print(f"  R labels available: "
+          f"{df_waves_filtered['R'].notnull().sum()}")
+    print(f"  S labels available: "
+          f"{df_waves_filtered['S'].notnull().sum()}")
+
+    # 3. build feature matrix — amplitude fixed, shape signal isolated
+    X, feature_names = build_gpr_features(
+        waveforms_filtered, df_waves_filtered
+    )
 
     # 4. get targets
-    y_R = df_waves["R"].values.astype(np.float32)
-    y_S = df_waves["S"].values.astype(np.float32)
+    y_R = df_waves_filtered["R"].values.astype(np.float32)
+    y_S = df_waves_filtered["S"].values.astype(np.float32)
 
     # 5. train/val/test split — generous split given small dataset
     splits = split_labeled(X, y_R, y_S, train=0.80, val=0.10, test=0.10)
