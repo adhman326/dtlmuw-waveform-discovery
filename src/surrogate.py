@@ -305,6 +305,48 @@ if __name__ == "__main__":
     mae_R, r2_R = evaluate_gpr(gpr_R, X_test, yR_test, target_name="R")
     mae_S, r2_S = evaluate_gpr(gpr_S, X_test, yS_test, target_name="S")
 
+    # 9b. stable R² estimate across multiple seeds
+    print(f"\n── Stable R² Estimate (5 seeds) ──────────────────")
+    r2_scores  = []
+    mae_scores = []
+
+    for seed in [42, 123, 7, 0, 256]:
+        # resplit with this seed
+        splits_i = split_labeled(X, y_R, y_S,
+                                 train=0.80, val=0.10,
+                                 test=0.10, seed=seed)
+        X_tr_i = scaler.fit_transform(splits_i[0])
+        X_te_i = scaler.transform(splits_i[6])
+        y_tr_i = splits_i[1]
+        y_te_i = splits_i[7]
+
+        # train a temporary GPR on this split
+        gpr_temp = train_gpr(X_tr_i, y_tr_i, target_name=f"R seed={seed}")
+
+        # evaluate
+        mae_i, r2_i = evaluate_gpr(
+            gpr_temp, X_te_i, y_te_i, target_name=f"R seed={seed}"
+        )
+
+        if r2_i is not None:
+            r2_scores.append(r2_i)
+            mae_scores.append(mae_i)
+
+    print(f"\nMean R²:  {np.mean(r2_scores):.4f}")
+    print(f"Std  R²:  {np.std(r2_scores):.4f}")
+    print(f"Mean MAE: {np.mean(mae_scores):.4f}")
+    print(f"Range:    [{min(r2_scores):.4f}, {max(r2_scores):.4f}]")
+    print(f"──────────────────────────────────────────────────")
+
+    # also update the saved metrics file with stable estimate
+    with open("results/gpr_metrics.txt", "a") as f:
+        f.write(f"\n\nStable R² Estimate (5 seeds):\n")
+        f.write(f"  Mean R²:  {np.mean(r2_scores):.4f}\n")
+        f.write(f"  Std  R²:  {np.std(r2_scores):.4f}\n")
+        f.write(f"  Mean MAE: {np.mean(mae_scores):.4f}\n")
+        f.write(f"  Range:    [{min(r2_scores):.4f}, "
+                f"{max(r2_scores):.4f}]\n")
+
     # 10. feature importance
     print_feature_importance(gpr_R, feature_names)
 
