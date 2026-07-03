@@ -1,0 +1,66 @@
+Using device: cuda
+VAE loaded from models/vae.pt
+GPR (R) loaded
+Scaler loaded
+Features expected: ['skewness', 'kurtosis', 'zero_crossing_rate', 'max_acceleration', 'period_plus', 'wavenumber_plus', 'reynolds', 'omega_plus']
+Loaded 110 labeled rows
+
+Missing values per column:
+source              0
+waveform_family     0
+amplitude_plus     12
+amplitude_star     98
+period_plus        24
+wavenumber_plus    24
+reynolds            0
+R                  11
+S                  59
+omega_plus         24
+R_uncertainty      94
+simulation_type    64
+dtype: int64
+Generated waveform shapes for 110 labeled rows
+Best sinusoidal R at A+=4.5, T+=125: 0.1809 (from 2 matching rows)
+
+Phase 1: Random exploration (50 points)...
+Fixed operating conditions: A+=4.5, T+=125.0, Re=180
+Best R after random exploration: 0.1307
+Best waveform shape descriptors:
+  skewness=-0.150, kurtosis=-1.368, zero_crossing_rate=0.156, max_accel=30.659
+
+Phase 2: Bayesian optimization (500 iterations)...
+  Iteration  100 | Best R: 0.2258 | Current R: 0.1332 ± 0.1215
+  Iteration  200 | Best R: 0.2258 | Current R: 0.1311 ± 0.1214
+  Iteration  300 | Best R: 0.2258 | Current R: 0.1322 ± 0.1215
+  Iteration  400 | Best R: 0.2258 | Current R: 0.1336 ± 0.1215
+  Iteration  500 | Best R: 0.2258 | Current R: 0.1336 ± 0.1215
+
+Optimization complete. Best predicted R: 0.2258
+
+Selected 10 diverse proposals:
+  Proposal  1: R=0.2258 ± 0.0056 | skew=0.027 | kurt=-1.833
+  Proposal  2: R=0.1917 ± 0.0024 | skew=-0.015 | kurt=-1.552
+  Proposal  3: R=0.1339 ± 0.1215 | skew=-1.105 | kurt=0.951
+  Proposal  4: R=0.1338 ± 0.1215 | skew=1.356 | kurt=1.292
+  Proposal  5: R=0.1337 ± 0.1215 | skew=-0.084 | kurt=-1.347
+  Proposal  6: R=0.1337 ± 0.1215 | skew=-0.155 | kurt=-1.321
+  Proposal  7: R=0.1337 ± 0.1215 | skew=-0.097 | kurt=-1.339
+  Proposal  8: R=0.1337 ± 0.1215 | skew=-0.145 | kurt=-1.314
+  Proposal  9: R=0.1337 ± 0.1215 | skew=-0.064 | kurt=-1.340
+  Proposal 10: R=0.1337 ± 0.1215 | skew=-0.106 | kurt=-1.293
+Optimization history saved
+Proposed waveforms plot saved
+
+Proposed waveforms saved to results/optimizer/proposed_waveforms.csv
+
+── Final Summary ───────────────────────────────────
+Operating conditions:          A+=4.5, T+=125.0, Re=180
+Sinusoidal baseline R:         0.1809
+Best proposed R:               0.2258
+Proposals beating baseline:    2 / 10
+Best proposal skewness:        0.0272
+Best proposal kurtosis:        -1.8329
+────────────────────────────────────────────────────
+
+Optimization complete.
+Run: git add results/optimizer/ && git commit -m 'optimizer results' && git push
