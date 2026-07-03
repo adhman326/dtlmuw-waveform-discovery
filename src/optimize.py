@@ -12,8 +12,8 @@ from dataset import load_labeled, VELOCITY_COLS
 from vae import VAE, N_POINTS, HIDDEN_DIM, LATENT_DIM, SAVE_PATH
 
 # ── Configuration ────────────────────────────────────────────────────────────
-N_ITERATIONS    = 500    # number of BO steps
-N_RANDOM_INIT   = 50     # random exploration before BO kicks in
+N_ITERATIONS   = 1000   # doubled from 500
+N_RANDOM_INIT  = 100    # doubled from 50
 N_PROPOSALS     = 10     # number of novel waveforms to propose at end
 LATENT_BOUNDS   = 3.0    # search within ±3 std of latent space
 RANDOM_SEED     = 42
@@ -193,7 +193,7 @@ def run_bayesian_optimization(vae, gpr_R, scaler, feature_names):
         )
 
         # compute EI and pick best candidate
-        ei       = expected_improvement(mu_all, sigma_all, best_so_far)
+        ei = expected_improvement(mu_all, sigma_all, best_so_far, xi=0.001) 
         best_idx = np.argmax(ei)
         next_z   = candidates[best_idx]
 
@@ -270,7 +270,7 @@ def extract_proposals(evaluated_z, evaluated_waveforms,
 
         # diversity check
         too_close = any(
-            np.linalg.norm(z - z_sel) < 0.5
+            np.linalg.norm(z - z_sel) < 0.3
             for z_sel in selected_z
         )
 
