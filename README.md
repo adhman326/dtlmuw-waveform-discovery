@@ -187,8 +187,8 @@ Used by optimizer to build feature vectors correctly.
 
 | Source | Rows | Waveform Families | R Available | S Available |
 |---|---|---|---|---|
-| Cimarelli et al. 2013 | ~41 | sine, square, revsawtooth, doublepeak, asymmetric | Yes | Partial |
-| Gatti & Quadrio 2016 | ~70 | sine only | Yes | Partial |
+| Cimarelli et al. 2013 | 41 | sine, square, revsawtooth, doublepeak, asymmetric | Yes | Partial |
+| Gatti & Quadrio 2016 | 69 | sine only | Yes | Partial |
 
 Columns: source, waveform_family, amplitude_plus, amplitude_star,
 period_plus, wavenumber_plus, reynolds, R, S, omega_plus,
