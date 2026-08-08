@@ -1,0 +1,12 @@
+GPR Evaluation Metrics (Shape Descriptor Features)
+==================================================
+
+Features: ['skewness', 'kurtosis', 'zero_crossing_rate', 'max_acceleration', 'period_plus', 'wavenumber_plus', 'reynolds', 'omega_plus']
+
+Drag Reduction (R):
+  MAE: 0.0221
+  R²: 0.8483
+
+Net Power Saving (S):
+  MAE: 0.0130
+  R²: 0.9137

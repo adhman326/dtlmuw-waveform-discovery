@@ -28,6 +28,26 @@ FIXED_OMEGA      = 2 * np.pi / 125.0
 RESULTS_DIR = "results/optimizer"
 device      = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+# Confidence bar for a proposal to be reportable. Derived empirically: an
+# audit of the global BO search found predictive std is sharply bimodal —
+# ~1093/1100 evaluated candidates sit at the far-field ceiling (~0.1034,
+# i.e. the GPR has no nearby training data), while only a handful of points
+# near the known training waveform shapes score well below that. 0.06 sits
+# in the gap between those two populations.
+CONFIDENCE_STD_THRESHOLD = 0.06
+N_ANCHOR_ROUNDS   = 5    # shrinking-radius local search rounds per anchor
+N_ANCHOR_PER_ROUND = 200 # candidates sampled per round
+ANCHOR_INIT_SIGMA  = 0.5 # initial latent-space search radius around anchor
+
+# Minimum diversity distance between selected proposals, measured in shape-
+# DESCRIPTOR space (skewness, kurtosis, zero_crossing_rate, max_acceleration,
+# each standardized by their std across the confident candidate pool) — NOT
+# raw latent-vector distance. Two different latent codes can decode to
+# near-identical waveforms (the decoder is a highly nonlinear, effectively
+# many-to-one map), so latent distance doesn't guarantee the proposals are
+# actually different shapes; descriptor distance does.
+MIN_DESCRIPTOR_DIST = 1.0
+
 
 # ── Load Models ───────────────────────────────────────────────────────────────
 def load_models():
@@ -114,6 +134,93 @@ def predict_R(waveform, gpr_R, scaler, feature_names):
     x         = build_feature(waveform, scaler, feature_names)
     mu, sigma = gpr_R.predict(x, return_std=True)
     return float(mu[0]), float(sigma[0])
+
+
+# ── Anchor Latents From Known Training Families ───────────────────────────────
+def get_family_anchor_latents(vae, labeled_df):
+    """
+    Encode the mean VAE latent position of each known R-labeled waveform
+    family at the fixed A+=4.5 condition (sine, square, revsawtooth,
+    doublepeak, asymmetric). These are the only regions of latent space
+    the GPR has training data near — global random search only stumbled
+    into one of them in 1100 evaluated points, so local search is seeded
+    here directly instead of hoping random exploration finds them by luck.
+    """
+    amp_mask = (
+        (labeled_df["amplitude_plus"].between(4.0, 5.0)) |
+        (labeled_df["amplitude_plus"].isna() &
+         labeled_df["amplitude_star"].between(4.0, 5.0))
+    )
+    has_wave = labeled_df[VELOCITY_COLS].notnull().all(axis=1)
+    df_sub = labeled_df[amp_mask & has_wave & labeled_df["R"].notnull()]
+
+    anchors = {}
+    print("\nFamily anchor latents (from known R-labeled training shapes):")
+    for family, group in df_sub.groupby("waveform_family"):
+        waveforms = group[VELOCITY_COLS].values.astype(np.float32)
+        w_tensor  = torch.tensor(waveforms, dtype=torch.float32).to(device)
+        with torch.no_grad():
+            mu = vae.encode(w_tensor).cpu().numpy()
+        z0 = mu.mean(axis=0).astype(np.float32)
+        anchors[family] = z0
+        print(f"  '{family}': {len(group)} rows -> latent mean "
+              f"(||z||={np.linalg.norm(z0):.3f})")
+    return anchors
+
+
+# ── Local Search Around an Anchor ─────────────────────────────────────────────
+def local_search_around_anchor(vae, gpr_R, scaler, feature_names, z0, seed,
+                                n_rounds=N_ANCHOR_ROUNDS,
+                                n_per_round=N_ANCHOR_PER_ROUND,
+                                init_sigma=ANCHOR_INIT_SIGMA):
+    """
+    Shrinking-radius local search seeded at a known-data anchor. Every round
+    samples candidates from N(z0, sigma) — centered on the ORIGINAL anchor,
+    never recentered on the running best — and only sigma shrinks each
+    round. This is a genuine trust-region refinement: it zooms in around
+    z0 to locate its local peak precisely, but cannot walk away from it.
+
+    (An earlier version of this function recentered on the best candidate
+    found each round, which turned it into an unconstrained greedy
+    hill-climb: every anchor — sine, square, revsawtooth, doublepeak,
+    asymmetric — drifted to the same single global optimum, defeating the
+    entire point of anchoring per-family. Fixed centering is what actually
+    keeps each anchor's search local to its own family's neighborhood.)
+
+    `seed` is required (not defaulted/omitted) — an earlier version used
+    `np.random.default_rng()` unseeded, which draws from OS entropy and
+    ignores the script's RANDOM_SEED/np.random.seed(42) entirely (Generator
+    objects are deliberately independent of the legacy global seed), so
+    each anchor's result silently changed between runs of identical code.
+
+    Returns (evaluated list of (z, mu, sigma), best_z, best_mu, best_sigma).
+    """
+    rng = np.random.default_rng(seed)
+    evaluated = []
+    best_z, best_mu, best_sigma = z0, None, None
+    sigma = init_sigma
+
+    for _ in range(n_rounds):
+        candidates = (z0 +
+                      rng.normal(0, sigma, size=(n_per_round, len(z0)))
+                      ).astype(np.float32)
+        feats = np.array([
+            build_feature(decode_latent(vae, z), scaler, feature_names)[0]
+            for z in candidates
+        ])
+        mu_all, sigma_all = gpr_R.predict(feats, return_std=True)
+        for z, mu, s in zip(candidates, mu_all, sigma_all):
+            evaluated.append((z, float(mu), float(s)))
+
+        round_best_idx = int(np.argmax(mu_all))
+        if best_mu is None or mu_all[round_best_idx] > best_mu:
+            best_z     = candidates[round_best_idx]
+            best_mu    = float(mu_all[round_best_idx])
+            best_sigma = float(sigma_all[round_best_idx])
+
+        sigma *= 0.5  # zoom in around z0, not around the running best
+
+    return evaluated, best_z, best_mu, best_sigma
 
 
 # ── Expected Improvement ──────────────────────────────────────────────────────
@@ -252,30 +359,59 @@ def get_sinusoidal_baseline(labeled_df):
 # ── Extract Diverse Proposals ─────────────────────────────────────────────────
 def extract_proposals(evaluated_z, evaluated_waveforms,
                       evaluated_R, evaluated_std,
-                      n_proposals=N_PROPOSALS):
+                      n_proposals=N_PROPOSALS,
+                      max_std=CONFIDENCE_STD_THRESHOLD,
+                      min_desc_dist=MIN_DESCRIPTOR_DIST):
     """
-    Extract top N proposals by predicted R with diversity constraint.
-    Proposals must be at least 0.5 units apart in latent space.
-    Also computes shape descriptors for each proposal.
+    Extract top N proposals by predicted R with a diversity constraint,
+    restricted to candidates the GPR is actually confident about
+    (std < max_std). Does NOT backfill with low-confidence candidates to
+    force the count up to n_proposals — a proposal only gets reported if
+    the model has real basis for the prediction.
+
+    Diversity is enforced in normalized shape-descriptor space, not raw
+    latent distance — see MIN_DESCRIPTOR_DIST for why.
     """
-    sorted_idx = np.argsort(evaluated_R)[::-1]
+    evaluated_std = np.asarray(evaluated_std)
+    evaluated_R   = np.asarray(evaluated_R)
+
+    confident_idx = np.where(evaluated_std < max_std)[0]
+    print(f"\n{len(confident_idx)} / {len(evaluated_std)} evaluated "
+          f"candidates clear the confidence bar (std < {max_std})")
+
+    # precompute shape descriptors for every confident candidate, then
+    # standardize each dimension by its std across that pool so no single
+    # descriptor (e.g. max_acceleration, which spans ~0-100) dominates the
+    # distance calculation
+    descriptors = {
+        idx: compute_shape_descriptors(evaluated_waveforms[idx])
+        for idx in confident_idx
+    }
+    if len(descriptors) > 0:
+        desc_matrix = np.array(list(descriptors.values()))
+        desc_std    = desc_matrix.std(axis=0)
+        desc_std[desc_std < 1e-8] = 1.0  # constant dims: don't divide by 0
+    normalized = {idx: np.array(d) / desc_std for idx, d in descriptors.items()}
+
+    sorted_idx = confident_idx[np.argsort(evaluated_R[confident_idx])[::-1]]
     selected   = []
-    selected_z = []
+    selected_desc = []
 
     for idx in sorted_idx:
         z        = evaluated_z[idx]
         r        = evaluated_R[idx]
         std      = evaluated_std[idx]
         waveform = evaluated_waveforms[idx]
+        desc_n   = normalized[idx]
 
-        # diversity check
+        # diversity check — in standardized shape-descriptor space
         too_close = any(
-            np.linalg.norm(z - z_sel) < 0.3
-            for z_sel in selected_z
+            np.linalg.norm(desc_n - d_sel) < min_desc_dist
+            for d_sel in selected_desc
         )
 
         if not too_close:
-            sk, ku, zc, ac = compute_shape_descriptors(waveform)
+            sk, ku, zc, ac = descriptors[idx]
             selected.append({
                 "latent_coords":      z,
                 "waveform":           waveform,
@@ -286,10 +422,15 @@ def extract_proposals(evaluated_z, evaluated_waveforms,
                 "zero_crossing_rate": zc,
                 "max_acceleration":   ac,
             })
-            selected_z.append(z)
+            selected_desc.append(desc_n)
 
         if len(selected) >= n_proposals:
             break
+
+    if len(selected) < n_proposals:
+        print(f"NOTE: only {len(selected)} confident, sufficiently diverse "
+              f"proposal(s) found (requested up to {n_proposals}). Not "
+              f"backfilling with low-confidence candidates to pad the count.")
 
     print(f"\nSelected {len(selected)} diverse proposals:")
     for i, p in enumerate(selected):
@@ -329,7 +470,10 @@ def plot_optimization_history(evaluated_R, best_sine_R):
 
 # ── Plot Proposed Waveforms ───────────────────────────────────────────────────
 def plot_proposals(proposals, best_sine_R):
-    n    = len(proposals)
+    n = len(proposals)
+    if n == 0:
+        print("No confident proposals to plot — skipping proposed_waveforms.png")
+        return
     cols = 5
     rows = (n + cols - 1) // cols
 
@@ -374,6 +518,15 @@ def plot_proposals(proposals, best_sine_R):
 
 # ── Save Proposals to CSV ─────────────────────────────────────────────────────
 def save_proposals(proposals, best_sine_R):
+    if len(proposals) == 0:
+        print("\nNo proposals cleared the confidence bar — nothing to save.")
+        print("This means no region of latent space searched (global BO + "
+              "anchor-seeded local search) landed close enough to the "
+              "labeled training data for the GPR to make a confident "
+              "prediction. Consider more DNS-labeled shapes, or a lower "
+              "CONFIDENCE_STD_THRESHOLD if a looser bar is acceptable.")
+        return pd.DataFrame()
+
     rows = []
     for i, prop in enumerate(proposals):
         row = {
@@ -431,18 +584,59 @@ if __name__ == "__main__":
     labeled_df  = load_labeled()
     best_sine_R = get_sinusoidal_baseline(labeled_df)
 
-    # run optimizer
-    evaluated_z, evaluated_waveforms, evaluated_R, evaluated_std = \
+    # run optimizer — global search (random init + greedy EI)
+    bo_z, bo_waveforms, bo_R, bo_std = \
         run_bayesian_optimization(vae, gpr_R, scaler, feature_names)
 
-    # extract diverse proposals
+    # Phase 3: anchor-seeded local search near each known training family.
+    # The global search above only reliably finds ONE confident region by
+    # luck (see PIPELINE_CHANGELOG.md) because the training data is 5
+    # discrete waveform families in a continuous latent space, not a
+    # continuum BO can smoothly climb toward. Seed local refinement
+    # directly at each known family's encoded position instead.
+    print(f"\nPhase 3: Anchor-seeded local search near known training "
+          f"families...")
+    anchors = get_family_anchor_latents(vae, labeled_df)
+    anchor_z, anchor_R, anchor_std = [], [], []
+    # anchors.items() order is deterministic (pandas groupby sorts keys by
+    # default), so RANDOM_SEED + i gives each family a fixed, distinct,
+    # reproducible seed rather than an unseeded/OS-entropy RNG
+    for i, (family, z0) in enumerate(anchors.items()):
+        evaluated, best_z, best_mu, best_sigma = local_search_around_anchor(
+            vae, gpr_R, scaler, feature_names, z0, seed=RANDOM_SEED + i
+        )
+        for z, mu, s in evaluated:
+            anchor_z.append(z)
+            anchor_R.append(mu)
+            anchor_std.append(s)
+        print(f"  '{family}' anchor best: R={best_mu:.4f} ± {best_sigma:.4f}")
+
+    anchor_waveforms = [decode_latent(vae, z) for z in anchor_z]
+
+    # merge global + anchor-seeded evaluations into one candidate pool —
+    # for proposal extraction ONLY. Kept separate from bo_R/bo_z/etc. above
+    # because the anchor-search points are not part of the Bayesian
+    # optimization's running-best trace: they come from 5 independent
+    # fixed-center local searches (see local_search_around_anchor), not
+    # from iterative EI-guided improvement, so plotting them on the same
+    # "evaluation number" axis as the BO history would misrepresent 5000
+    # local-refinement samples as 5000 more BO iterations.
+    all_z         = np.concatenate([bo_z, np.array(anchor_z)], axis=0)
+    all_waveforms = bo_waveforms + anchor_waveforms
+    all_R         = np.concatenate([bo_R, np.array(anchor_R)])
+    all_std       = np.concatenate([bo_std, np.array(anchor_std)])
+
+    # extract diverse proposals — confidence-gated, does not pad with
+    # low-confidence candidates to force a fixed count (see extract_proposals)
     proposals = extract_proposals(
-        evaluated_z, evaluated_waveforms,
-        evaluated_R, evaluated_std
+        all_z, all_waveforms,
+        all_R, all_std
     )
 
-    # plots
-    plot_optimization_history(evaluated_R, best_sine_R)
+    # plots — history plot shows ONLY the true BO trace (bo_R), not the
+    # anchor-seeded local search, so "Evaluation number" on the x-axis
+    # means what it says
+    plot_optimization_history(bo_R, best_sine_R)
     plot_proposals(proposals, best_sine_R)
 
     # save

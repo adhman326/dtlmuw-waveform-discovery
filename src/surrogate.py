@@ -166,13 +166,17 @@ def train_gpr(X_train, y_train, target_name="R"):
 
 
 # ── Evaluate GPR ──────────────────────────────────────────────────────────────
-def evaluate_gpr(gpr, X_test, y_test, target_name="R"):
+def evaluate_gpr(gpr, X_test, y_test, target_name="R", min_samples=2):
     valid = np.logical_not(np.isnan(y_test))
     X_te  = X_test[valid]
     y_te  = y_test[valid]
 
-    if len(y_te) == 0:
-        print(f"No valid test samples for {target_name} — skipping")
+    if len(y_te) < min_samples:
+        # r2_score is mathematically undefined below 2 samples (sklearn
+        # returns nan + UndefinedMetricWarning). Skip explicitly instead of
+        # letting a nan silently poison any downstream mean/std over seeds.
+        print(f"Only {len(y_te)} valid test sample(s) for {target_name} "
+              f"(need >= {min_samples} for a defined R²) — skipping")
         return None, None
 
     y_pred, y_std = gpr.predict(X_te, return_std=True)
@@ -298,7 +302,11 @@ if __name__ == "__main__":
     y_S = df_waves_filtered["S"].values.astype(np.float32)
 
     # 5. train/val/test split — generous split given small dataset
-    splits = split_labeled(X, y_R, y_S, train=0.80, val=0.10, test=0.10)
+    # stratified on R-label availability: R is the target actually used
+    # downstream by the optimizer, so its test-split size must be stable
+    # across runs rather than left to chance (see split_labeled docstring).
+    splits = split_labeled(X, y_R, y_S, train=0.80, val=0.10, test=0.10,
+                            stratify_target="R")
     X_train, yR_train, yS_train = splits[0], splits[1], splits[2]
     X_val,   yR_val,   yS_val   = splits[3], splits[4], splits[5]
     X_test,  yR_test,  yS_test  = splits[6], splits[7], splits[8]
@@ -326,15 +334,22 @@ if __name__ == "__main__":
     mae_S, r2_S = evaluate_gpr(gpr_S, X_test, yS_test, target_name="S")
 
     # 9b. stable R² estimate across multiple seeds
-    print(f"\n── Stable R² Estimate (5 seeds) ──────────────────")
-    r2_scores  = []
-    mae_scores = []
+    SEEDS = [42, 123, 7, 0, 256]
+    print(f"\n── Stable R² Estimate ({len(SEEDS)} seeds) ──────────────────")
+    r2_scores    = []
+    mae_scores   = []
+    skipped_seeds = []
 
-    for seed in [42, 123, 7, 0, 256]:
-        # resplit with this seed
+    for seed in SEEDS:
+        # resplit with this seed — stratified on R-label availability so
+        # every seed gets a consistent number of labeled test rows instead
+        # of a count that swings with the luck of the permutation (this is
+        # what previously let a 1-sample test split through and produced a
+        # silent nan in the mean/std below).
         splits_i = split_labeled(X, y_R, y_S,
                                  train=0.80, val=0.10,
-                                 test=0.10, seed=seed)
+                                 test=0.10, seed=seed,
+                                 stratify_target="R")
         X_tr_i = scaler.fit_transform(splits_i[0])
         X_te_i = scaler.transform(splits_i[6])
         y_tr_i = splits_i[1]
@@ -351,21 +366,42 @@ if __name__ == "__main__":
         if r2_i is not None:
             r2_scores.append(r2_i)
             mae_scores.append(mae_i)
+        else:
+            skipped_seeds.append(seed)
 
-    print(f"\nMean R²:  {np.mean(r2_scores):.4f}")
-    print(f"Std  R²:  {np.std(r2_scores):.4f}")
-    print(f"Mean MAE: {np.mean(mae_scores):.4f}")
-    print(f"Range:    [{min(r2_scores):.4f}, {max(r2_scores):.4f}]")
+    n_valid = len(r2_scores)
+    print()
+    if skipped_seeds:
+        print(f"Skipped seeds (insufficient labeled test samples): "
+              f"{skipped_seeds}")
+
+    if n_valid == 0:
+        print("No seeds produced a defined R² — cannot compute a stable "
+              "estimate. This means the labeled dataset is too small for "
+              "this split ratio; consider more DNS data or a larger test "
+              "fraction.")
+    else:
+        mean_r2  = np.mean(r2_scores)
+        std_r2   = np.std(r2_scores)
+        mean_mae = np.mean(mae_scores)
+        print(f"Mean R² over {n_valid}/{len(SEEDS)} valid seeds: {mean_r2:.4f}")
+        print(f"Std  R²:  {std_r2:.4f}")
+        print(f"Mean MAE: {mean_mae:.4f}")
+        print(f"Range:    [{min(r2_scores):.4f}, {max(r2_scores):.4f}]")
     print(f"──────────────────────────────────────────────────")
 
     # also update the saved metrics file with stable estimate
     with open("results/gpr_metrics.txt", "a") as f:
-        f.write(f"\n\nStable R² Estimate (5 seeds):\n")
-        f.write(f"  Mean R²:  {np.mean(r2_scores):.4f}\n")
-        f.write(f"  Std  R²:  {np.std(r2_scores):.4f}\n")
-        f.write(f"  Mean MAE: {np.mean(mae_scores):.4f}\n")
-        f.write(f"  Range:    [{min(r2_scores):.4f}, "
-                f"{max(r2_scores):.4f}]\n")
+        f.write(f"\n\nStable R² Estimate ({n_valid}/{len(SEEDS)} valid "
+                f"seeds; skipped: {skipped_seeds}):\n")
+        if n_valid == 0:
+            f.write("  No seeds produced a defined R².\n")
+        else:
+            f.write(f"  Mean R²:  {mean_r2:.4f}\n")
+            f.write(f"  Std  R²:  {std_r2:.4f}\n")
+            f.write(f"  Mean MAE: {mean_mae:.4f}\n")
+            f.write(f"  Range:    [{min(r2_scores):.4f}, "
+                    f"{max(r2_scores):.4f}]\n")
 
     # 10. feature importance
     print_feature_importance(gpr_R, feature_names)

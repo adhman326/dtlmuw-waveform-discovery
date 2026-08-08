@@ -175,25 +175,65 @@ def build_gpr_dataset(labeled_df):
 
 
 # ── Train / Validation / Test Split ─────────────────────────────────────────
-def split_labeled(X, y_R, y_S, train=0.70, val=0.15, test=0.15, seed=RANDOM_SEED):
+def split_labeled(X, y_R, y_S, train=0.70, val=0.15, test=0.15, seed=RANDOM_SEED,
+                   stratify_target=None, min_test_labeled=3):
     """
     Split labeled data into train / val / test sets.
     Applied to labeled rows only — synthetic data is never split this way.
+
+    stratify_target: None, "R", or "S". When given, rows are split into a
+    "has a valid label for this target" pool and a "doesn't" pool, each
+    pool is divided by the same train/val/test ratios, and the results are
+    recombined. This keeps the fraction of labeled rows landing in the test
+    set consistent across seeds instead of leaving it to chance — with a
+    plain index-based split, a random 10% slice of ALL rows can land on
+    very few (or very many) of the rows that actually carry that target's
+    label, purely by luck of the seed.
     """
     assert abs(train + val + test - 1.0) < 1e-6, "Splits must sum to 1.0"
 
     rng = np.random.default_rng(seed)
     n = len(X)
-    indices = rng.permutation(n)
 
-    n_train = int(n * train)
-    n_val   = int(n * val)
+    def _split_pool(idx_pool):
+        idx_pool = rng.permutation(idx_pool)
+        n_pool   = len(idx_pool)
+        n_tr     = int(round(n_pool * train))
+        n_va     = int(round(n_pool * val))
+        return (idx_pool[:n_tr],
+                idx_pool[n_tr:n_tr + n_va],
+                idx_pool[n_tr + n_va:])
 
-    train_idx = indices[:n_train]
-    val_idx   = indices[n_train:n_train + n_val]
-    test_idx  = indices[n_train + n_val:]
+    if stratify_target is not None:
+        y_target = {"R": y_R, "S": y_S}[stratify_target]
+        labeled_mask = ~np.isnan(y_target)
 
-    print(f"\nSplit: {len(train_idx)} train / {len(val_idx)} val / {len(test_idx)} test")
+        tr_l, va_l, te_l = _split_pool(np.where(labeled_mask)[0])
+        tr_u, va_u, te_u = _split_pool(np.where(~labeled_mask)[0])
+
+        train_idx = rng.permutation(np.concatenate([tr_l, tr_u]))
+        val_idx   = rng.permutation(np.concatenate([va_l, va_u]))
+        test_idx  = rng.permutation(np.concatenate([te_l, te_u]))
+
+        strat_note = f"  (stratified on '{stratify_target}' label availability)"
+        if len(te_l) < min_test_labeled:
+            print(f"WARNING: only {len(te_l)} labeled '{stratify_target}' "
+                  f"sample(s) landed in the test split (recommended minimum: "
+                  f"{min_test_labeled}). With so few labeled rows available "
+                  f"({labeled_mask.sum()} total), R²/MAE for this seed will "
+                  f"be noisy — this is a small-data limit, not something the "
+                  f"split can fix.")
+    else:
+        indices   = rng.permutation(n)
+        n_train   = int(n * train)
+        n_val     = int(n * val)
+        train_idx = indices[:n_train]
+        val_idx   = indices[n_train:n_train + n_val]
+        test_idx  = indices[n_train + n_val:]
+        strat_note = ""
+
+    print(f"\nSplit: {len(train_idx)} train / {len(val_idx)} val / "
+          f"{len(test_idx)} test{strat_note}")
 
     return (X[train_idx], y_R[train_idx], y_S[train_idx],
             X[val_idx],   y_R[val_idx],   y_S[val_idx],
