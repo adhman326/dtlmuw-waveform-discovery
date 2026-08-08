@@ -10,3 +10,13 @@ Drag Reduction (R):
 Net Power Saving (S):
   MAE: 0.0130
   R²: 0.9137
+
+
+5-Seed Pooled CV (5/5 valid seeds; skipped: []):
+  Pooled R²:  0.8526
+  Pooled MAE: 0.0233
+  (naive per-fold-mean R², for reference only: -0.5314 +/- 2.7579)
+
+Leave-One-Out CV (24 labeled rows):
+  LOOCV R²:  0.9078
+  LOOCV MAE: 0.0166

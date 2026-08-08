@@ -66,6 +66,19 @@ def load_models():
     print(f"GPR (R) loaded")
     print(f"Scaler loaded")
     print(f"Features expected: {feature_names}")
+    # NOTE: this is a single GPR fit from surrogate.py's main (non-cross-
+    # validated) 80/10/10 split — not an ensemble, and not one of the
+    # cross-validation folds computed alongside it (5-seed pooled CV,
+    # LOOCV). Every proposal below inherits whatever fold-to-fold
+    # instability those CV numbers quantify for this specific fit; a
+    # different train/test split of the same 24 labeled rows could train
+    # a meaningfully different GPR_R and shift every proposal in this run.
+    # This is an accepted architectural tradeoff (the optimizer needs one
+    # deployed model, not an ensemble) — flagged here so it isn't silently
+    # forgotten when reading proposal_R values as if they were exact.
+    print("NOTE: gpr_R.pkl is a single fit on one 80/10/10 split, not "
+          "cross-validated — see surrogate.py's pooled-CV/LOOCV R² for "
+          "how much this specific fit could vary under a different split.")
     return vae, gpr_R, scaler, feature_names
 
 

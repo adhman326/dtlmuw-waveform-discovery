@@ -4,9 +4,11 @@ import torch
 import matplotlib.pyplot as plt
 import os
 import sys
+import warnings
 from scipy.stats import skew, kurtosis
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import Matern, WhiteKernel, ConstantKernel
+from sklearn.exceptions import ConvergenceWarning
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error, r2_score
 import joblib
@@ -134,12 +136,13 @@ def build_gpr_features(waveforms, df):
     return X, feature_names
 
 # ── Train GPR ─────────────────────────────────────────────────────────────────
-def train_gpr(X_train, y_train, target_name="R"):
+def train_gpr(X_train, y_train, target_name="R", verbose=True):
     valid = np.logical_not(np.isnan(y_train))
     X_tr  = X_train[valid]
     y_tr  = y_train[valid]
-    print(f"\nTraining GPR for {target_name} on {len(y_tr)} samples "
-          f"({(~valid).sum()} skipped — missing labels)")
+    if verbose:
+        print(f"\nTraining GPR for {target_name} on {len(y_tr)} samples "
+              f"({(~valid).sum()} skipped — missing labels)")
 
     n_features = X_tr.shape[1]
 
@@ -161,15 +164,31 @@ def train_gpr(X_train, y_train, target_name="R"):
     )
 
     gpr.fit(X_tr, y_tr)
-    print(f"Optimized kernel: {gpr.kernel_}")
+    if verbose:
+        print(f"Optimized kernel: {gpr.kernel_}")
     return gpr
+
+
+# ── Shared Prediction Helper ───────────────────────────────────────────────────
+def _valid_predictions(gpr, X_test, y_test):
+    """
+    Filter to samples with a valid label, then predict. Shared by
+    evaluate_gpr (per-fold diagnostics) and the pooled-CV / LOOCV loops
+    (which need the raw predictions, not just a summary statistic).
+    Returns (y_true, y_pred, y_std), all possibly empty.
+    """
+    valid = np.logical_not(np.isnan(y_test))
+    X_te  = X_test[valid]
+    y_te  = y_test[valid]
+    if len(y_te) == 0:
+        return y_te, np.array([]), np.array([])
+    y_pred, y_std = gpr.predict(X_te, return_std=True)
+    return y_te, y_pred, y_std
 
 
 # ── Evaluate GPR ──────────────────────────────────────────────────────────────
 def evaluate_gpr(gpr, X_test, y_test, target_name="R", min_samples=2):
-    valid = np.logical_not(np.isnan(y_test))
-    X_te  = X_test[valid]
-    y_te  = y_test[valid]
+    y_te, y_pred, y_std = _valid_predictions(gpr, X_test, y_test)
 
     if len(y_te) < min_samples:
         # r2_score is mathematically undefined below 2 samples (sklearn
@@ -178,8 +197,6 @@ def evaluate_gpr(gpr, X_test, y_test, target_name="R", min_samples=2):
         print(f"Only {len(y_te)} valid test sample(s) for {target_name} "
               f"(need >= {min_samples} for a defined R²) — skipping")
         return None, None
-
-    y_pred, y_std = gpr.predict(X_te, return_std=True)
 
     mae = mean_absolute_error(y_te, y_pred)
     r2  = r2_score(y_te, y_pred)
@@ -333,11 +350,44 @@ if __name__ == "__main__":
     mae_R, r2_R = evaluate_gpr(gpr_R, X_test, yR_test, target_name="R")
     mae_S, r2_S = evaluate_gpr(gpr_S, X_test, yS_test, target_name="S")
 
-    # 9b. stable R² estimate across multiple seeds
+    # save base metrics now (fresh "w") — the CV sections below append to
+    # this file. Must happen before them: this used to be written at the
+    # very end of the script in "w" mode, which silently overwrote and
+    # discarded everything the CV sections had appended earlier in the
+    # same run. The pooled-CV/LOOCV numbers were correct on the terminal
+    # but never actually landed in results/gpr_metrics.txt on disk.
+    with open("results/gpr_metrics.txt", "w") as f:
+        f.write("GPR Evaluation Metrics (Shape Descriptor Features)\n")
+        f.write("=" * 50 + "\n\n")
+        f.write(f"Features: {feature_names}\n\n")
+        if mae_R is not None:
+            f.write(f"Drag Reduction (R):\n  MAE: {mae_R:.4f}\n  R²: {r2_R:.4f}\n\n")
+        if mae_S is not None:
+            f.write(f"Net Power Saving (S):\n  MAE: {mae_S:.4f}\n  R²: {r2_S:.4f}\n")
+
+    # 9b. 5-seed cross-validation — POOLED R², not averaged per-fold R².
+    #
+    # Averaging 5 independently-computed per-fold R² values is the wrong
+    # statistic at this sample size: with ~3 test points per fold, R² is
+    # unbounded below and a single off prediction can swing one fold's R²
+    # to something like -6, which then dominates a plain average of 5
+    # numbers (this is exactly what happened before this fix: Mean R² =
+    # -0.53 +/- 2.76, range [-6.05, 0.90], from folds this small).
+    #
+    # The fix: pool every out-of-fold (y_true, y_pred) pair across all 5
+    # seeds into one combined set, then compute ONE R² over that pooled
+    # set. This uses a single, stable denominator (variance of all ~15
+    # pooled true values) instead of 5 separate tiny-sample denominators,
+    # and it's still a genuine cross-validated R² — not a substitute
+    # metric, just the statistically correct way to combine folds this
+    # small. MAE is unaffected by this distinction (it's linear, so
+    # per-fold-averaged and pooled MAE are already close) — this is why
+    # MAE looked stable across runs even while the old R² average didn't.
     SEEDS = [42, 123, 7, 0, 256]
-    print(f"\n── Stable R² Estimate ({len(SEEDS)} seeds) ──────────────────")
-    r2_scores    = []
-    mae_scores   = []
+    print(f"\n── 5-Seed Cross-Validation ({len(SEEDS)} seeds) ──────────────")
+    per_fold_r2  = []   # kept only as a secondary diagnostic, see below
+    pooled_y_true = []
+    pooled_y_pred = []
     skipped_seeds = []
 
     for seed in SEEDS:
@@ -358,50 +408,107 @@ if __name__ == "__main__":
         # train a temporary GPR on this split
         gpr_temp = train_gpr(X_tr_i, y_tr_i, target_name=f"R seed={seed}")
 
-        # evaluate
+        # per-fold diagnostic print (unchanged) ...
         mae_i, r2_i = evaluate_gpr(
             gpr_temp, X_te_i, y_te_i, target_name=f"R seed={seed}"
         )
+        # ... plus the raw predictions, pooled across all seeds
+        y_te_valid, y_pred_valid, _ = _valid_predictions(gpr_temp, X_te_i, y_te_i)
 
         if r2_i is not None:
-            r2_scores.append(r2_i)
-            mae_scores.append(mae_i)
+            per_fold_r2.append(r2_i)
         else:
             skipped_seeds.append(seed)
 
-    n_valid = len(r2_scores)
+        if len(y_te_valid) > 0:
+            pooled_y_true.extend(y_te_valid.tolist())
+            pooled_y_pred.extend(y_pred_valid.tolist())
+
     print()
     if skipped_seeds:
-        print(f"Skipped seeds (insufficient labeled test samples): "
-              f"{skipped_seeds}")
+        print(f"Seeds with no valid test sample at all: {skipped_seeds}")
 
-    if n_valid == 0:
-        print("No seeds produced a defined R² — cannot compute a stable "
-              "estimate. This means the labeled dataset is too small for "
-              "this split ratio; consider more DNS data or a larger test "
-              "fraction.")
+    pooled_y_true = np.array(pooled_y_true)
+    pooled_y_pred = np.array(pooled_y_pred)
+    n_pooled = len(pooled_y_true)
+
+    if n_pooled < 2:
+        pooled_r2, pooled_mae = None, None
+        print("Fewer than 2 pooled predictions across all seeds — cannot "
+              "compute a pooled R².")
     else:
-        mean_r2  = np.mean(r2_scores)
-        std_r2   = np.std(r2_scores)
-        mean_mae = np.mean(mae_scores)
-        print(f"Mean R² over {n_valid}/{len(SEEDS)} valid seeds: {mean_r2:.4f}")
-        print(f"Std  R²:  {std_r2:.4f}")
-        print(f"Mean MAE: {mean_mae:.4f}")
-        print(f"Range:    [{min(r2_scores):.4f}, {max(r2_scores):.4f}]")
+        pooled_r2  = r2_score(pooled_y_true, pooled_y_pred)
+        pooled_mae = mean_absolute_error(pooled_y_true, pooled_y_pred)
+        print(f"Pooled CV R²  ({n_pooled} out-of-fold predictions across "
+              f"{len(SEEDS) - len(skipped_seeds)}/{len(SEEDS)} seeds): "
+              f"{pooled_r2:.4f}")
+        print(f"Pooled CV MAE: {pooled_mae:.4f}")
+        if per_fold_r2:
+            print(f"(for reference — naive mean of per-fold R², the "
+                  f"previous/unstable metric: "
+                  f"{np.mean(per_fold_r2):.4f} +/- {np.std(per_fold_r2):.4f}, "
+                  f"range [{min(per_fold_r2):.4f}, {max(per_fold_r2):.4f}])")
     print(f"──────────────────────────────────────────────────")
 
-    # also update the saved metrics file with stable estimate
+    # 9c. Leave-one-out CV — every labeled R row used as test exactly once.
+    # More appropriate than 5 random 80/10/10 splits at this sample size:
+    # with ~24 labeled rows, the 5-seed scheme above tests on only ~15
+    # (seed, fold) draws total, some rows retested multiple times by
+    # chance and others possibly never drawn as test at all. LOOCV uses
+    # every labeled row exactly once, so there's no "which random points
+    # land in test" fragility left at all. Cost is ~24 GPR fits instead
+    # of 5, but each fit here is well under a second.
+    labeled_idx = np.where(~np.isnan(y_R))[0]
+    n_labeled   = len(labeled_idx)
+    print(f"\n── Leave-One-Out CV ({n_labeled} labeled R rows) ─────────────")
+
+    loo_y_true, loo_y_pred = [], []
+    with warnings.catch_warnings():
+        # 24 fits' worth of per-dimension bound-pinning ConvergenceWarnings
+        # is pure noise here (already characterized once — see
+        # PIPELINE_CHANGELOG.md); suppressed for readability only.
+        warnings.simplefilter("ignore", category=ConvergenceWarning)
+        for i, held_out in enumerate(labeled_idx):
+            train_idx = labeled_idx[labeled_idx != held_out]
+
+            scaler_loo = StandardScaler()
+            X_tr_loo = scaler_loo.fit_transform(X[train_idx])
+            X_te_loo = scaler_loo.transform(X[[held_out]])
+            y_tr_loo = y_R[train_idx]
+
+            gpr_loo = train_gpr(X_tr_loo, y_tr_loo,
+                                 target_name=f"R LOO {i+1}/{n_labeled}",
+                                 verbose=False)
+            y_pred_loo, _ = gpr_loo.predict(X_te_loo, return_std=True)
+
+            loo_y_true.append(float(y_R[held_out]))
+            loo_y_pred.append(float(y_pred_loo[0]))
+
+    loo_y_true = np.array(loo_y_true)
+    loo_y_pred = np.array(loo_y_pred)
+    loo_r2  = r2_score(loo_y_true, loo_y_pred)
+    loo_mae = mean_absolute_error(loo_y_true, loo_y_pred)
+    print(f"LOOCV R²  ({n_labeled} held-out predictions, pooled): {loo_r2:.4f}")
+    print(f"LOOCV MAE: {loo_mae:.4f}")
+    print(f"──────────────────────────────────────────────────")
+
+    # also update the saved metrics file with both CV estimates
     with open("results/gpr_metrics.txt", "a") as f:
-        f.write(f"\n\nStable R² Estimate ({n_valid}/{len(SEEDS)} valid "
+        f.write(f"\n\n5-Seed Pooled CV "
+                f"({len(SEEDS) - len(skipped_seeds)}/{len(SEEDS)} valid "
                 f"seeds; skipped: {skipped_seeds}):\n")
-        if n_valid == 0:
-            f.write("  No seeds produced a defined R².\n")
+        if pooled_r2 is None:
+            f.write("  Fewer than 2 pooled predictions — no R² computed.\n")
         else:
-            f.write(f"  Mean R²:  {mean_r2:.4f}\n")
-            f.write(f"  Std  R²:  {std_r2:.4f}\n")
-            f.write(f"  Mean MAE: {mean_mae:.4f}\n")
-            f.write(f"  Range:    [{min(r2_scores):.4f}, "
-                    f"{max(r2_scores):.4f}]\n")
+            f.write(f"  Pooled R²:  {pooled_r2:.4f}\n")
+            f.write(f"  Pooled MAE: {pooled_mae:.4f}\n")
+            if per_fold_r2:
+                f.write(f"  (naive per-fold-mean R², for reference only: "
+                        f"{np.mean(per_fold_r2):.4f} +/- "
+                        f"{np.std(per_fold_r2):.4f})\n")
+        f.write(f"\nLeave-One-Out CV ({n_labeled} labeled rows):\n")
+        f.write(f"  LOOCV R²:  {loo_r2:.4f}\n")
+        f.write(f"  LOOCV MAE: {loo_mae:.4f}\n")
 
     # 10. feature importance
     print_feature_importance(gpr_R, feature_names)
@@ -410,17 +517,9 @@ if __name__ == "__main__":
     plot_gpr_predictions(gpr_R, X_test, yR_test, target_name="R")
     plot_gpr_predictions(gpr_S, X_test, yS_test, target_name="S")
 
-    # 12. save metrics + feature names for optimizer to reuse
-    with open("results/gpr_metrics.txt", "w") as f:
-        f.write("GPR Evaluation Metrics (Shape Descriptor Features)\n")
-        f.write("=" * 50 + "\n\n")
-        f.write(f"Features: {feature_names}\n\n")
-        if mae_R is not None:
-            f.write(f"Drag Reduction (R):\n  MAE: {mae_R:.4f}\n  R²: {r2_R:.4f}\n\n")
-        if mae_S is not None:
-            f.write(f"Net Power Saving (S):\n  MAE: {mae_S:.4f}\n  R²: {r2_S:.4f}\n")
-
-    # save feature names so optimize.py knows the exact column order
+    # 12. save feature names for optimize.py to reuse
+    # (base metrics + CV results were already written to
+    # results/gpr_metrics.txt above, in order — see the note at step 9)
     joblib.dump(feature_names, "models/feature_names.pkl")
 
     print("\nGPR training complete (shape descriptor features).")
