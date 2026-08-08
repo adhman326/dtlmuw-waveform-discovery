@@ -1,5 +1,4 @@
-Using device: cuda
-VAE loaded from models/vae.pt
+Using device: cpu
 Loaded 110 labeled rows
 
 Missing values per column:
@@ -17,42 +16,100 @@ R_uncertainty      94
 simulation_type    64
 dtype: int64
 Generated waveform shapes for 110 labeled rows
-Encoded 110 waveforms to latent space (shape: (110, 8))
-  Filling 12 missing amplitude_plus with median 7.0000
-  Filling 98 missing amplitude_star with median 6.2518
-  Filling 24 missing period_plus with median 121.3931
-  Filling 24 missing wavenumber_plus with median 0.0000
-  Filling 24 missing omega_plus with median 0.0517
-GPR feature matrix shape: (110, 6)  (physical only)
+Found 110 labeled rows with waveform shape data
 
-Split: 88 train / 11 val / 11 test
+Filtered to amplitude ≈ 4.5:
+  Rows before: 110
+  Rows after:  35
+  Waveform families: {'sine': 11, 'doublepeak': 7, 'asymmetric': 7, 'revsawtooth': 6, 'square': 4}
+  R labels available: 24
+  S labels available: 23
+  4 missing period_plus left as NaN — will be median-imputed per fold, from training rows only
+  4 missing wavenumber_plus left as NaN — will be median-imputed per fold, from training rows only
+  4 missing omega_plus left as NaN — will be median-imputed per fold, from training rows only
+GPR feature matrix shape: (35, 8)
+Features used: ['skewness', 'kurtosis', 'zero_crossing_rate', 'max_acceleration', 'period_plus', 'wavenumber_plus', 'reynolds', 'omega_plus']
+
+Split: 28 train / 3 val / 4 test  (stratified on 'R' label availability)
 Scaler saved to models/scaler.pkl
 
-Training GPR for R on 79 samples (9 skipped — missing labels)
-Optimized kernel: 1.79**2 * Matern(length_scale=4.26, nu=2.5) + WhiteKernel(noise_level=0.147)
+Training GPR for R on 19 samples (9 skipped — missing labels)
+Optimized kernel: 1.4**2 * Matern(length_scale=[4.93, 2.85, 6.29, 100, 2.8, 1, 0.01, 100], nu=2.5) + WhiteKernel(noise_level=0.0295)
 GPR (R) saved to models/gpr_R.pkl
 
-Training GPR for S on 39 samples (49 skipped — missing labels)
-Optimized kernel: 1.12**2 * Matern(length_scale=0.0562, nu=2.5) + WhiteKernel(noise_level=0.0745)
+Training GPR for S on 18 samples (10 skipped — missing labels)
+Optimized kernel: 1.37**2 * Matern(length_scale=[2.52, 100, 0.0707, 6.2, 12.2, 0.165, 0.01, 4.1], nu=2.5) + WhiteKernel(noise_level=0.0327)
 GPR (S) saved to models/gpr_S.pkl
 
 ── GPR Evaluation: R ──────────────────────
-Test samples:        10
-MAE:                 0.0422
-R²:                  0.7567
+Test samples:        3
+MAE:                 0.0221
+R²:                  0.8483
 95% CI coverage:     100.00%  (target: ~95%)
-Mean uncertainty:    0.0660
+Mean uncertainty:    0.0327
 ────────────────────────────────────────────────────
 
 ── GPR Evaluation: S ──────────────────────
-Test samples:        6
-MAE:                 0.0774
-R²:                  -0.7107
-95% CI coverage:     83.33%  (target: ~95%)
-Mean uncertainty:    0.0553
+Test samples:        2
+MAE:                 0.0130
+R²:                  0.9137
+95% CI coverage:     100.00%  (target: ~95%)
+Mean uncertainty:    0.0199
 ────────────────────────────────────────────────────
+
+── 5-Seed Cross-Validation (5 seeds) ──────────────
+
+── GPR Evaluation: R seed=42 ──────────────────────
+Test samples:        3
+MAE:                 0.0221
+R²:                  0.8483
+────────────────────────────────────────────────────
+
+── GPR Evaluation: R seed=123 ──────────────────────
+Test samples:        3
+MAE:                 0.0294
+R²:                  -6.0461
+────────────────────────────────────────────────────
+
+── GPR Evaluation: R seed=7 ──────────────────────
+Test samples:        3
+MAE:                 0.0149
+R²:                  0.8935
+────────────────────────────────────────────────────
+
+── GPR Evaluation: R seed=0 ──────────────────────
+Test samples:        3
+MAE:                 0.0376
+R²:                  0.7445
+────────────────────────────────────────────────────
+
+── GPR Evaluation: R seed=256 ──────────────────────
+Test samples:        3
+MAE:                 0.0127
+R²:                  0.9030
+────────────────────────────────────────────────────
+
+Pooled CV R²  (15 out-of-fold predictions across 5/5 seeds): 0.8526
+Pooled CV MAE: 0.0233
+(for reference — naive mean of per-fold R², the previous/unstable metric: -0.5314 +/- 2.7579, range [-6.0461, 0.9030])
+──────────────────────────────────────────────────
+
+── Leave-One-Out CV (24 labeled R rows) ─────────────
+LOOCV R²  (24 held-out predictions, pooled): 0.9078
+LOOCV MAE: 0.0166
+──────────────────────────────────────────────────
+
+── Feature Importance (via length scale) ──────────
+  reynolds              relative importance: 100.0000
+  wavenumber_plus       relative importance: 1.0000
+  period_plus           relative importance: 0.3571
+  kurtosis              relative importance: 0.3504
+  skewness              relative importance: 0.2030
+  zero_crossing_rate    relative importance: 0.1590
+  max_acceleration      relative importance: 0.0100
+  omega_plus            relative importance: 0.0100
+─────────────────────────────────────────────────────
 Plot saved to results/gpr_predictions_R.png
 Plot saved to results/gpr_predictions_S.png
 
-GPR training complete.
-Next step: run src/optimize.py to find novel waveforms.
+GPR training complete (shape descriptor features).
