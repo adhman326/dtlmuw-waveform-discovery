@@ -102,11 +102,28 @@ def get_labeled_waveforms(labeled_df):
 
 
 # ── Build GPR Feature Matrix ──────────────────────────────────────────────────
-def build_gpr_features(waveforms, df):
+def build_gpr_features(waveforms, df, impute=True):
     """
     Build GPR feature matrix using shape descriptors + physical params.
     When amplitude is fixed, it is excluded from features since it
     has no variance and adds noise.
+
+    Shape descriptors (skewness, kurtosis, zero_crossing_rate,
+    max_acceleration) are computed per-row from that row's own waveform
+    only — no cross-row statistic, so no leakage risk regardless of when
+    this is called relative to any train/test split.
+
+    The physical columns (period_plus, wavenumber_plus, reynolds,
+    omega_plus) are a different story: ~4/35 rows are missing one or more
+    of these and get median-imputed. impute=True (the default) fills them
+    here, using the median of whatever `df` is passed in — fine for a
+    final deployed model, but if `df` is the full dataset and this is
+    called before a train/test split, the imputed values for those ~4
+    rows are informed by every row's value for that column, including
+    whatever ends up in a held-out test fold later. impute=False leaves
+    those columns as NaN instead, so the caller can compute the median
+    from ONLY a given fold's training rows and apply it separately to
+    that fold's train and test sets — see impute_phys_median_by_fold().
     """
     descriptors_df = compute_descriptors_batch(waveforms)
     descriptors_df.index = df.index
@@ -119,13 +136,20 @@ def build_gpr_features(waveforms, df):
             phys_cols.append(col)
 
     phys_df = df[phys_cols].copy()
-    for col in phys_cols:
-        median = phys_df[col].median()
-        n_miss = phys_df[col].isnull().sum()
-        if n_miss > 0:
-            print(f"  Filling {n_miss} missing {col} with median "
-                  f"{median:.4f}")
-        phys_df[col] = phys_df[col].fillna(median)
+    if impute:
+        for col in phys_cols:
+            median = phys_df[col].median()
+            n_miss = phys_df[col].isnull().sum()
+            if n_miss > 0:
+                print(f"  Filling {n_miss} missing {col} with median "
+                      f"{median:.4f}")
+            phys_df[col] = phys_df[col].fillna(median)
+    else:
+        for col in phys_cols:
+            n_miss = phys_df[col].isnull().sum()
+            if n_miss > 0:
+                print(f"  {n_miss} missing {col} left as NaN — will be "
+                      f"median-imputed per fold, from training rows only")
 
     X = pd.concat([descriptors_df, phys_df], axis=1)
     feature_names = list(X.columns)
@@ -134,6 +158,45 @@ def build_gpr_features(waveforms, df):
     print(f"GPR feature matrix shape: {X.shape}")
     print(f"Features used: {feature_names}")
     return X, feature_names
+
+
+# ── Per-Fold Median Imputation ─────────────────────────────────────────────────
+def impute_phys_median_by_fold(X_train, *other_sets, phys_col_idx):
+    """
+    Compute each physical column's median from X_train ONLY (NaN-omitted),
+    then fill NaN in X_train and every array in other_sets with that same
+    training-derived value. This is what actually prevents a held-out
+    fold's rows from influencing the value used to fill missing rows in
+    that same fold — computing the median once globally, before any
+    split, leaks test-fold information into the imputed value even though
+    the split itself only index-slices an already-fully-imputed X.
+
+    Returns copies (X_train_imputed, *other_sets_imputed), same order as
+    input. Falls back to X_train's own global median (with a warning) only
+    in the degenerate case where a fold's training rows are ALL missing a
+    given column — doesn't happen in this dataset, but fails loud instead
+    of propagating NaN into the GPR if it ever did.
+    """
+    X_train = X_train.copy()
+    medians = {}
+    for j in phys_col_idx:
+        col = X_train[:, j]
+        med = np.nanmedian(col) if not np.all(np.isnan(col)) else np.nan
+        if np.isnan(med):
+            print(f"WARNING: training fold has zero non-missing values "
+                  f"for feature column {j} — cannot compute a train-only "
+                  f"median. Leaving NaN (this will break GPR fitting).")
+        medians[j] = med
+        col[np.isnan(col)] = med
+
+    results = [X_train]
+    for X_other in other_sets:
+        X_other = X_other.copy()
+        for j, med in medians.items():
+            col = X_other[:, j]
+            col[np.isnan(col)] = med
+        results.append(X_other)
+    return tuple(results)
 
 # ── Train GPR ─────────────────────────────────────────────────────────────────
 def train_gpr(X_train, y_train, target_name="R", verbose=True):
@@ -309,10 +372,21 @@ if __name__ == "__main__":
     print(f"  S labels available: "
           f"{df_waves_filtered['S'].notnull().sum()}")
 
-    # 3. build feature matrix — amplitude fixed, shape signal isolated
+    # 3. build feature matrix — amplitude fixed, shape signal isolated.
+    # impute=False: leaves period_plus/wavenumber_plus/omega_plus as NaN
+    # for the ~4 rows missing them, instead of filling with a median
+    # computed globally across all 35 rows. Filling globally, before any
+    # split, would leak whatever ends up in a held-out fold into the
+    # value used to fill missing rows in that same fold — every fold
+    # below (main split, 5-seed CV, LOOCV) imputes fresh from its own
+    # training rows only, via impute_phys_median_by_fold().
     X, feature_names = build_gpr_features(
-        waveforms_filtered, df_waves_filtered
+        waveforms_filtered, df_waves_filtered, impute=False
     )
+    phys_impute_idx = [feature_names.index(c) for c in
+                        ["period_plus", "wavenumber_plus",
+                         "reynolds", "omega_plus"]
+                        if c in feature_names]
 
     # 4. get targets
     y_R = df_waves_filtered["R"].values.astype(np.float32)
@@ -327,6 +401,12 @@ if __name__ == "__main__":
     X_train, yR_train, yS_train = splits[0], splits[1], splits[2]
     X_val,   yR_val,   yS_val   = splits[3], splits[4], splits[5]
     X_test,  yR_test,  yS_test  = splits[6], splits[7], splits[8]
+
+    # 5b. impute physical columns — train-derived median only, applied to
+    # val/test too. Must happen after the split, not before.
+    X_train, X_val, X_test = impute_phys_median_by_fold(
+        X_train, X_val, X_test, phys_col_idx=phys_impute_idx
+    )
 
     # 6. scale features
     scaler  = StandardScaler()
@@ -396,18 +476,25 @@ if __name__ == "__main__":
         # of a count that swings with the luck of the permutation (this is
         # what previously let a 1-sample test split through and produced a
         # silent nan in the mean/std below).
+        # X here is still the RAW matrix from step 3 (impute=False) — NaN
+        # in period_plus/wavenumber_plus/omega_plus for the ~4 affected
+        # rows, imputed fresh below from this seed's training rows only.
         splits_i = split_labeled(X, y_R, y_S,
                                  train=0.80, val=0.10,
                                  test=0.10, seed=seed,
                                  stratify_target="R")
+        X_tr_i_raw, X_te_i_raw = splits_i[0], splits_i[6]
+        X_tr_i_raw, X_te_i_raw = impute_phys_median_by_fold(
+            X_tr_i_raw, X_te_i_raw, phys_col_idx=phys_impute_idx
+        )
         # fresh StandardScaler per seed — not the outer `scaler` (which is
         # only for the main, non-CV split at step 6). fit_transform doesn't
         # accumulate state across calls either way, so reusing `scaler`
         # here was never a leakage bug, but a fresh instance per fold
         # removes any doubt on re-read and is the more standard pattern.
         scaler_i = StandardScaler()
-        X_tr_i = scaler_i.fit_transform(splits_i[0])
-        X_te_i = scaler_i.transform(splits_i[6])
+        X_tr_i = scaler_i.fit_transform(X_tr_i_raw)
+        X_te_i = scaler_i.transform(X_te_i_raw)
         y_tr_i = splits_i[1]
         y_te_i = splits_i[7]
 
@@ -477,9 +564,15 @@ if __name__ == "__main__":
         for i, held_out in enumerate(labeled_idx):
             train_idx = labeled_idx[labeled_idx != held_out]
 
+            # X is still the RAW matrix (impute=False at step 3) — impute
+            # from this fold's 23 training rows only, before scaling.
+            X_tr_loo_raw, X_te_loo_raw = impute_phys_median_by_fold(
+                X[train_idx], X[[held_out]], phys_col_idx=phys_impute_idx
+            )
+
             scaler_loo = StandardScaler()
-            X_tr_loo = scaler_loo.fit_transform(X[train_idx])
-            X_te_loo = scaler_loo.transform(X[[held_out]])
+            X_tr_loo = scaler_loo.fit_transform(X_tr_loo_raw)
+            X_te_loo = scaler_loo.transform(X_te_loo_raw)
             y_tr_loo = y_R[train_idx]
 
             gpr_loo = train_gpr(X_tr_loo, y_tr_loo,
