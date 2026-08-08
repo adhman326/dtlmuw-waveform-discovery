@@ -400,8 +400,14 @@ if __name__ == "__main__":
                                  train=0.80, val=0.10,
                                  test=0.10, seed=seed,
                                  stratify_target="R")
-        X_tr_i = scaler.fit_transform(splits_i[0])
-        X_te_i = scaler.transform(splits_i[6])
+        # fresh StandardScaler per seed — not the outer `scaler` (which is
+        # only for the main, non-CV split at step 6). fit_transform doesn't
+        # accumulate state across calls either way, so reusing `scaler`
+        # here was never a leakage bug, but a fresh instance per fold
+        # removes any doubt on re-read and is the more standard pattern.
+        scaler_i = StandardScaler()
+        X_tr_i = scaler_i.fit_transform(splits_i[0])
+        X_te_i = scaler_i.transform(splits_i[6])
         y_tr_i = splits_i[1]
         y_te_i = splits_i[7]
 
