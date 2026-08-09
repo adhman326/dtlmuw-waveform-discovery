@@ -482,10 +482,11 @@ def plot_optimization_history(evaluated_R, best_sine_R):
 
 
 # ── Plot Proposed Waveforms ───────────────────────────────────────────────────
-def plot_proposals(proposals, best_sine_R):
+def plot_proposals(proposals, best_sine_R, path=None, title_suffix=""):
+    path = path or f"{RESULTS_DIR}/proposed_waveforms.png"
     n = len(proposals)
     if n == 0:
-        print("No confident proposals to plot — skipping proposed_waveforms.png")
+        print(f"No confident proposals to plot — skipping {path}")
         return
     cols = 5
     rows = (n + cols - 1) // cols
@@ -519,25 +520,25 @@ def plot_proposals(proposals, best_sine_R):
         axes[j].set_visible(False)
 
     plt.suptitle(
-        f"Novel Waveform Proposals (A+=4.5 fixed)\n"
+        f"Novel Waveform Proposals{title_suffix} (A+=4.5 fixed)\n"
         f"Sinusoidal baseline R={best_sine_R:.4f}",
         fontsize=11
     )
     plt.tight_layout()
-    plt.savefig(f"{RESULTS_DIR}/proposed_waveforms.png", dpi=150)
+    plt.savefig(path, dpi=150)
     plt.show()
-    print("Proposed waveforms plot saved")
+    print(f"Proposed waveforms plot saved to {path}")
 
 
 # ── Save Proposals to CSV ─────────────────────────────────────────────────────
-def save_proposals(proposals, best_sine_R):
+def save_proposals(proposals, best_sine_R, path=None, label=""):
+    path = path or f"{RESULTS_DIR}/proposed_waveforms.csv"
     if len(proposals) == 0:
-        print("\nNo proposals cleared the confidence bar — nothing to save.")
-        print("This means no region of latent space searched (global BO + "
-              "anchor-seeded local search) landed close enough to the "
-              "labeled training data for the GPR to make a confident "
-              "prediction. Consider more DNS-labeled shapes, or a lower "
-              "CONFIDENCE_STD_THRESHOLD if a looser bar is acceptable.")
+        print(f"\nNo proposals cleared the confidence bar — nothing to save to {path}.")
+        print("This means no region of latent space searched landed close "
+              "enough to the labeled training data for the GPR to make a "
+              "confident prediction. Consider more DNS-labeled shapes, or a "
+              "lower CONFIDENCE_STD_THRESHOLD if a looser bar is acceptable.")
         return pd.DataFrame()
 
     rows = []
@@ -561,11 +562,10 @@ def save_proposals(proposals, best_sine_R):
 
     df   = pd.DataFrame(rows)
     os.makedirs(RESULTS_DIR, exist_ok=True)
-    path = f"{RESULTS_DIR}/proposed_waveforms.csv"
     df.to_csv(path, index=False)
 
     print(f"\nProposed waveforms saved to {path}")
-    print(f"\n── Final Summary ───────────────────────────────────")
+    print(f"\n── Final Summary{label} ───────────────────────────────────")
     print(f"Operating conditions:          A+={FIXED_AMPLITUDE}, "
           f"T+={FIXED_PERIOD}, Re={FIXED_REYNOLDS}")
     print(f"Sinusoidal baseline R:         {best_sine_R:.4f}")
@@ -600,6 +600,31 @@ if __name__ == "__main__":
     # run optimizer — global search (random init + greedy EI)
     bo_z, bo_waveforms, bo_R, bo_std = \
         run_bayesian_optimization(vae, gpr_R, scaler, feature_names)
+
+    # Phase 1+2 ONLY, extracted and reported separately from the combined
+    # (Phase 1+2 + Phase 3) result below. Every one of the combined
+    # result's 10 proposals traces to the anchor-seeded search — the
+    # confidence gate filters out the free/unguided pool entirely before
+    # ranking even happens (only 3/1100 Phase 1+2 candidates ever clear
+    # std < 0.06), so the combined block alone can't show what unguided
+    # search would have found on its own. This block answers that
+    # directly, using the identical selection logic (rank by predicted R,
+    # same confidence gate, same descriptor-space diversity constraint)
+    # applied to bo_* alone — nothing here changes the combined result
+    # further down.
+    print(f"\n── Phase 1+2 Only: Top {N_PROPOSALS} Diverse Proposals "
+          f"(unguided search) ──────────────")
+    proposals_unguided = extract_proposals(bo_z, bo_waveforms, bo_R, bo_std)
+    plot_proposals(
+        proposals_unguided, best_sine_R,
+        path=f"{RESULTS_DIR}/proposed_waveforms_unguided.png",
+        title_suffix=" — Phase 1+2 Only (Unguided Search)"
+    )
+    save_proposals(
+        proposals_unguided, best_sine_R,
+        path=f"{RESULTS_DIR}/proposed_waveforms_unguided.csv",
+        label=" (Phase 1+2 Only — Unguided Search)"
+    )
 
     # Phase 3: anchor-seeded local search near each known training family.
     # The global search above only reliably finds ONE confident region by
