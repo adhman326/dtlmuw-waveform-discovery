@@ -1,0 +1,63 @@
+Using device: cpu
+VAE loaded from models/vae.pt
+GPR (R) loaded
+Scaler loaded
+Features expected: ['skewness', 'kurtosis', 'zero_crossing_rate', 'max_acceleration', 'period_plus', 'wavenumber_plus', 'reynolds', 'omega_plus']
+NOTE: gpr_R.pkl is a single fit on one 80/10/10 split, not cross-validated — see surrogate.py's pooled-CV/LOOCV R² for how much this specific fit could vary under a different split.
+Loaded 110 labeled rows
+Best sinusoidal R at A+=4.5, T+=125: 0.1809 (from 2 matching rows)
+
+Phase 1: Random exploration (100 points)...
+Fixed operating conditions: A+=4.5, T+=125.0, Re=180
+Best R after random exploration: 0.1419
+Best waveform shape descriptors:
+  skewness=-0.083, kurtosis=-1.343, zero_crossing_rate=0.156, max_accel=34.138
+
+Phase 2: Bayesian optimization (1000 iterations)...
+  Iteration  100 | Best R: 0.2282 | Current R: 0.1426 ± 0.1034
+  Iteration 1000 | Best R: 0.2282 | Current R: 0.1420 ± 0.1034
+
+Optimization complete. Best predicted R: 0.2282
+
+Phase 3: Anchor-seeded local search near known training families...
+
+Family anchor latents (from known R-labeled training shapes):
+  'asymmetric': 4 rows -> latent mean (||z||=2.531)
+  'doublepeak': 4 rows -> latent mean (||z||=1.992)
+  'revsawtooth': 4 rows -> latent mean (||z||=2.234)
+  'sine': 8 rows -> latent mean (||z||=2.142)
+  'square': 4 rows -> latent mean (||z||=3.364)
+  'asymmetric' anchor best: R=0.2148 ± 0.0165
+  'doublepeak' anchor best: R=0.2181 ± 0.0171
+  'revsawtooth' anchor best: R=0.1428 ± 0.1034
+  'sine' anchor best: R=0.2246 ± 0.0167
+  'square' anchor best: R=0.2322 ± 0.0171
+
+3182 / 6100 evaluated candidates clear the confidence bar (std < 0.06)
+
+Selected 10 diverse proposals:
+  Proposal  1: R=0.2322 ± 0.0171 | skew=-0.001 | kurt=-1.977
+  Proposal  2: R=0.2317 ± 0.0169 | skew=-0.040 | kurt=-1.922
+  Proposal  3: R=0.2283 ± 0.0173 | skew=-0.096 | kurt=-1.832
+  Proposal  4: R=0.2181 ± 0.0171 | skew=0.116 | kurt=-1.843
+  Proposal  5: R=0.2004 ± 0.0510 | skew=-0.087 | kurt=-1.841
+  Proposal  6: R=0.1979 ± 0.0169 | skew=-0.162 | kurt=-1.572
+  Proposal  7: R=0.1924 ± 0.0509 | skew=-0.128 | kurt=-1.743
+  Proposal  8: R=0.1907 ± 0.0151 | skew=0.072 | kurt=-1.608
+  Proposal  9: R=0.1838 ± 0.0507 | skew=0.101 | kurt=-1.754
+  Proposal 10: R=0.1810 ± 0.0517 | skew=-0.322 | kurt=-1.601
+Optimization history saved
+Proposed waveforms plot saved
+
+Proposed waveforms saved to results/optimizer/proposed_waveforms.csv
+
+── Final Summary ───────────────────────────────────
+Operating conditions:          A+=4.5, T+=125.0, Re=180
+Sinusoidal baseline R:         0.1809
+Best proposed R:               0.2322
+Proposals beating baseline:    10 / 10
+Best proposal skewness:        -0.0010
+Best proposal kurtosis:        -1.9768
+────────────────────────────────────────────────────
+
+Optimization complete.
