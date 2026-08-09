@@ -11,8 +11,8 @@ for turbulent drag reduction — inspired by dolphin skin biomechanics.
 ## Setup
 
 ```bash
-git clone https://github.com/adhman326/dtlmuw-project.git
-cd dtlmuw-project
+git clone https://github.com/adhman326/dtlmuw-waveform-discovery.git
+cd dtlmuw-waveform-discovery
 pip install -r requirements.txt
 ```
 
@@ -100,19 +100,32 @@ Each candidate is decoded to a waveform, shape descriptors computed, then
 queried through GPR. Amplitude fixed at A+=4.5 — optimizer finds advantage
 through waveform shape alone.
 
-Global EI search is followed by an anchor-seeded local search: the VAE
-latent position of each of the 5 known training waveform families (sine,
-square, revsawtooth, doublepeak, asymmetric) is encoded, and a local
-search refines around each one — global random/EI search alone reliably
-finds only one such region by luck. Final proposals are gated on GPR
-prediction uncertainty (only confident predictions are reported; the
-proposal count is not padded with low-confidence candidates to force a
-fixed number), with diversity enforced in shape-descriptor space rather
-than raw latent distance.
+Global EI search (Phase 1: random init, Phase 2: Bayesian optimization —
+"Phase 1+2" below) is followed by an anchor-seeded local search (Phase
+3): the VAE latent position of each of the 5 known training waveform
+families (sine, square, revsawtooth, doublepeak, asymmetric) is encoded,
+and a local search refines around each one — global random/EI search
+alone reliably finds only one such region by luck. All proposals — from
+either phase — are gated on GPR prediction uncertainty (only confident
+predictions are reported; the count is not padded with low-confidence
+candidates to force a fixed number), with diversity enforced in
+shape-descriptor space rather than raw latent distance.
 
-Output: `results/optimizer/proposed_waveforms.csv`,
-`results/optimizer/proposed_waveforms.png`,
-`results/optimizer/optimization_history.png`
+Proposals are extracted and reported **twice, separately**, from the
+same run:
+- **Unguided (Phase 1+2 only)** — what free/undirected search alone
+  finds. This is the result that actually supports a *discovery* claim.
+- **Combined (Phase 1+2 + Phase 3)** — includes the anchor-seeded local
+  search. This is confident local interpolation/refinement near already-
+  known training shapes, not discovery — report it as such. See Key
+  Results below for why these numbers differ so much.
+
+Output: `results/optimizer/proposed_waveforms_unguided.csv`,
+`results/optimizer/proposed_waveforms_unguided.png` (Phase 1+2 only),
+`results/optimizer/proposed_waveforms.csv`,
+`results/optimizer/proposed_waveforms.png` (combined),
+`results/optimizer/optimization_history.png` (Phase 1+2 trace only —
+Phase 3 isn't an iterative process, so it isn't plotted on this axis)
 
 ---
 
@@ -144,13 +157,29 @@ Output: `results/optimizer/proposed_waveforms.csv`,
 > amplitude-isolated setup.
 
 ### Optimizer
-- Operating conditions: A+=4.5, T+=125.0, Re=180
-- Sinusoidal baseline R: 0.1809
-- Best proposed R: 0.2327
-- Proposals beating baseline: 6/10 (all 10 reported proposals clear the
-  confidence bar — see Step 5)
+Operating conditions: A+=4.5, T+=125.0, Re=180. Sinusoidal baseline R: 0.1809.
+
+**Unguided (Phase 1+2 only) — the discovery result:**
+- Only 3/1100 evaluated candidates ever clear the confidence bar (std <
+  0.06) — undirected search rarely lands near the small number of
+  training-data neighborhoods the GPR can be confident about.
+- Best proposed R: 0.2282
+- Proposals beating baseline: **2/3** (the 3rd confident candidate,
+  R=0.1001, doesn't beat baseline)
+- This is what free search actually discovered on its own, unassisted.
+
+**Combined (Phase 1+2 + anchor-seeded Phase 3) — confident local
+interpolation, not discovery:**
+- Best proposed R: 0.2322
+- Proposals beating baseline: 10/10
+- Every one of these 10 traces to Phase 3, seeded at the encoded latent
+  position of a known training family (verified by tracing each
+  selected proposal back to its origin index) — zero came from the free
+  Phase 1+2 pool. Report this number as validation that the region
+  around known-good shapes stays good under local refinement, not as
+  evidence of novel-shape discovery.
 - Best proposal shape: near-symmetric, flat-topped
-  (skewness≈-0.001, kurtosis≈-1.995)
+  (skewness≈-0.001, kurtosis≈-1.977), near the `square` family anchor.
 
 ---
 
